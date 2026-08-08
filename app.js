@@ -9,7 +9,7 @@ const tRef = ref(db, 'tournament');
 const uid = () => Math.random().toString(36).slice(2, 9);
 const pairKey = (a, b) => [a, b].sort().join('~');
 const DEFAULT_CAT = '_default';
-const CATEGORIA_SUGESTOES = ['Categoria A', 'Categoria B', 'Categoria C', 'Categoria D', 'Masculina', 'Feminina', 'Mista'];
+const CATEGORIA_SUGESTOES = ['Cat Iniciante', '7ª Cat', '6ª Cat', '5ª Cat', '4ª Cat', 'Soma 9', 'Soma 11', 'Soma 13', 'Masculina', 'Feminina', 'Mista'];
 
 function defaultState() {
   return {
