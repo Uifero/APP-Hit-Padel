@@ -38,5 +38,6 @@ No Firebase Console → **Hosting** → **Adicionar domínio personalizado** →
 Sempre que eu (Claude) mandar arquivos novos, é só substituir na pasta e rodar `firebase deploy` de novo.
 
 ## Sobre segurança do PIN de admin
-Por enquanto o PIN de admin só bloqueia a *interface* — as regras do banco (`database.rules.json`) estão abertas para leitura/escrita para manter o MVP simples. Isso é suficiente para um torneio entre amigos/clube, mas tecnicamente alguém muito curioso poderia editar os dados direto pelo console do navegador. Se um dia quiser travar isso de verdade, dá para adicionar Firebase Authentication — me avisa quando quiser esse reforço.
-  Teste de deploy automático.
+Por enquanto o PIN de admin só bloqueia a *interface* — as regras do banco (`database.rules.json`) estão abertas para leitura/escrita para manter o MVP simples. Isso é suficiente para um torneio entre amigos/clube, mas tecnicamente alguém muito curioso poderia editar os dados direto pelo console do navegador. Se um dia quiser travar isso de verdade, dá para adicionar Firebase Authentication — me avisa quando quiser esse reforço.Teste de deploy automático.
+
+  
