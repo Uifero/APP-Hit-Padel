@@ -33,6 +33,14 @@
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
   .hp-admin-btn{flex-shrink:0;font-size:12px;font-weight:600;padding:7px 14px;border-radius:999px;background:transparent;color:var(--chalk);border:1px solid var(--line);cursor:pointer;}
   .hp-admin-btn.on{background:var(--orange);color:var(--navy-deep);border-color:var(--orange);}
+  .hp-header-actions{display:flex;align-items:center;gap:8px;}
+  .hp-back-btn{flex-shrink:0;font-size:12px;font-weight:600;padding:7px 12px;border-radius:999px;background:transparent;color:var(--chalk);border:1px solid var(--line);cursor:pointer;}
+  .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .dash-card{background:var(--navy-deep);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:left;cursor:pointer;color:var(--chalk);}
+  .dash-title{font-family:'Bebas Neue',sans-serif;font-size:17px;color:var(--orange);}
+  .dash-sub{font-size:12px;opacity:.7;margin-top:4px;}
+  .torneio-card{cursor:pointer;}
+  .torneio-card:hover{border-color:var(--orange);}
 
   .hp-main{max-width:720px;margin:0 auto;padding:0 16px 110px;}
 
@@ -100,8 +108,13 @@
   .team-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .score{font-family:'Bebas Neue',sans-serif;font-size:22px;width:32px;text-align:center;}
   .score-input{width:48px;text-align:center;padding:5px;border-radius:8px;background:var(--navy-deep);border:1px solid var(--line);color:var(--chalk);}
+  input[type=number]::-webkit-outer-spin-button, input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+  input[type=number]{-moz-appearance:textfield;}
   .vs{text-align:center;font-size:10px;opacity:.4;margin:2px 0;}
   .btn-save{margin-top:8px;width:100%;padding:8px;border-radius:10px;border:none;background:var(--orange);color:var(--navy-deep);font-weight:700;font-size:13px;cursor:pointer;}
+  .saved-row{margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .saved-tag{font-size:12px;font-weight:700;color:var(--yellow);}
+  .btn-edit{padding:6px 14px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--chalk);font-size:12px;cursor:pointer;}
 
   table.ranking{width:100%;border-collapse:collapse;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:14px;}
   table.ranking thead tr{background:var(--navy);text-align:left;}
