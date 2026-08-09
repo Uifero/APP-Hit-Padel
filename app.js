@@ -129,7 +129,7 @@ function generateGroups(teams, categoria) {
   const n = teams.length;
   const numGroups = Math.max(1, Math.ceil(n / 3));
   const shuffled = shuffleArr(teams);
-  const groups = Array.from({ length: numGroups }, (_, i) => ({ id: uid(), nome: `Grupo ${String.fromCharCode(65 + i)}`, categoria, teamIds: [], matches: [] }));
+  const groups = Array.from({ length: numGroups }, (_, i) => ({ id: uid(), nome: `Chave ${String.fromCharCode(65 + i)}`, categoria, teamIds: [], matches: [] }));
   shuffled.forEach((t, i) => groups[i % numGroups].teamIds.push(t.id));
   groups.forEach((g) => {
     for (let i = 0; i < g.teamIds.length; i++) for (let j = i + 1; j < g.teamIds.length; j++)
@@ -241,6 +241,7 @@ let setupOpen = true;
 let drafts = {};
 let savedFlash = null;
 let selectedCategoria = null;
+let pubSignupFlash = null;
 
 const root = document.getElementById('root');
 
@@ -270,7 +271,7 @@ function render() {
   const isChaves = state.tipo === 'chaves';
   const catKeys = categoriaKeys(state);
   const catKey = currentCategoria();
-  const showSetup = isAdmin || (state.players.length === 0 && state.teams.length === 0);
+  const showSetup = isAdmin;
 
   const catPlayers = state.players.filter((p) => categoriaOf(p) === catKey);
   const catTeams = state.teams.filter((t) => categoriaOf(t) === catKey);
@@ -296,12 +297,42 @@ function render() {
     <main class="hp-main">
       ${showSetup ? renderSetup(maxCourts) : ''}
       ${catKeys.length > 1 ? renderCategoriaTabs(catKeys, catKey) : ''}
+      ${renderInscricaoPublica()}
       ${isChaves ? renderGroupsAndElimination(catGroups, catElim, catTeams) : renderAmericanoView(catRounds, stats, catPlayers)}
     </main>
     <div id="pin-modal-slot"></div>
     <footer class="hp-footer">atualiza automaticamente</footer>
   `;
   bindEvents();
+}
+
+function renderInscricaoPublica() {
+  if (isAdmin) return '';
+  const catKey = currentCategoria();
+  const catLabelTxt = state.categorias.length ? ` — ${esc(catLabel(catKey) || 'Geral')}` : '';
+  const flashMsg = pubSignupFlash ? `<div class="signup-ok">${esc(pubSignupFlash)}</div>` : '';
+  if (state.tipo === 'chaves') {
+    return `
+    <section class="card signup-card">
+      <div class="card-body">
+        <div class="field">
+          <label>📝 Inscreva sua dupla${catLabelTxt}</label>
+          <div class="row"><input id="pub-team-name" placeholder="Ex: Ana & Bruna" /><button data-action="pub-add-team">Inscrever</button></div>
+          ${flashMsg}
+        </div>
+      </div>
+    </section>`;
+  }
+  return `
+    <section class="card signup-card">
+      <div class="card-body">
+        <div class="field">
+          <label>📝 Inscreva-se${catLabelTxt}</label>
+          <div class="row"><input id="pub-player-name" placeholder="Seu nome" /><button data-action="pub-add-player">Inscrever</button></div>
+          ${flashMsg}
+        </div>
+      </div>
+    </section>`;
 }
 
 function renderCategoriaTabs(catKeys, current) {
@@ -339,12 +370,12 @@ function renderSetup(maxCourts) {
           <div class="mode-row">
             <button class="mode-btn ${state.tipo === 'americano' ? 'active' : ''}" data-action="set-tipo" data-tipo="americano">Americano</button>
             <button class="mode-btn ${state.tipo === 'mini' ? 'active' : ''}" data-action="set-tipo" data-tipo="mini">Americano + Final</button>
-            <button class="mode-btn ${state.tipo === 'chaves' ? 'active' : ''}" data-action="set-tipo" data-tipo="chaves">Chaves (mata-mata)</button>
+            <button class="mode-btn ${state.tipo === 'chaves' ? 'active' : ''}" data-action="set-tipo" data-tipo="chaves">Torneio</button>
           </div>
           <div class="hint" style="text-align:left;margin-top:4px">
             ${state.tipo === 'americano' ? 'Duplas rotativas, todo mundo joga com e contra todo mundo o máximo possível. Ranking individual (desempate: pontos → vitórias → confronto direto).' : ''}
             ${state.tipo === 'mini' ? 'Igual ao Americano, mas ao final você gera uma grande final com as 4 melhores colocadas.' : ''}
-            ${state.tipo === 'chaves' ? 'Duplas fixas em grupos de 2 ou 3 (todas contra todas dentro do grupo). As 2 melhores de cada grupo avançam pra eliminatória (oitavas/quartas/semi/final). Desempate de grupo: vitórias → saldo de sets → confronto direto.' : ''}
+            ${state.tipo === 'chaves' ? 'Duplas fixas em chaves de 2 ou 3 (todas contra todas dentro da chave). As 2 melhores de cada chave avançam automaticamente pra eliminatória (oitavas/quartas/semi/final), gerada sozinha assim que os placares da fase de chaves terminam. Desempate: vitórias → saldo de sets → confronto direto.' : ''}
           </div>
         </div>
 
@@ -354,7 +385,7 @@ function renderSetup(maxCourts) {
         <div class="field"><label>PIN de admin</label><input id="admin-pin" value="${esc(state.adminPin)}" data-action="set-pin" /></div>
 
         ${state.tipo === 'chaves' ? `
-          <button class="btn-primary" data-action="gerar-grupos">Gerar grupos</button>
+          <button class="btn-primary" data-action="gerar-grupos">Gerar chaves</button>
           <div class="hint">Cadastre pelo menos 2 duplas por categoria</div>
         ` : `
           <button class="btn-primary" data-action="sortear">Sortear rodadas</button>
@@ -453,13 +484,11 @@ function renderRanking(stats) {
 // ---------- grupos + eliminatória (Chaves) ----------
 function renderGroupsAndElimination(catGroups, catElim, catTeams) {
   if (!catGroups.length) return '';
-  const podeGerarElim = isAdmin && catElim.length === 0 && allGroupMatchesScored(catGroups);
   return `
     <div class="groups-wrap">
       ${catGroups.map((g) => renderGroupCard(g)).join('')}
     </div>
-    ${podeGerarElim ? `<button class="btn-primary" style="margin:14px 0" data-action="gerar-eliminatoria" data-cat="${esc(catGroups[0].categoria)}">Gerar fase eliminatória</button>` : ''}
-    ${catElim.length ? renderEliminationView(catElim) : ''}
+    ${catElim.length ? renderEliminationView(catElim) : (allGroupMatchesScored(catGroups) ? '' : `<div class="hint" style="margin-top:12px">A eliminatória é gerada automaticamente assim que todos os placares das chaves forem lançados.</div>`)}
   `;
 }
 function renderGroupCard(g) {
@@ -539,12 +568,13 @@ function bindEvents() {
     if (action === 'add-player') el.addEventListener('click', addPlayerHandler);
     if (action === 'remove-team') el.addEventListener('click', () => persist({ ...state, teams: state.teams.filter((t) => t.id !== el.dataset.id) }));
     if (action === 'add-team') el.addEventListener('click', addTeamHandler);
+    if (action === 'pub-add-player') el.addEventListener('click', pubAddPlayerHandler);
+    if (action === 'pub-add-team') el.addEventListener('click', pubAddTeamHandler);
     if (action === 'set-courts') el.addEventListener('change', () => persist({ ...state, numCourts: Math.max(1, Number(el.value) || 1) }));
     if (action === 'set-rounds') el.addEventListener('change', () => persist({ ...state, numRounds: Math.max(1, Math.min(30, Number(el.value) || 1)) }));
     if (action === 'set-pin') el.addEventListener('change', () => persist({ ...state, adminPin: el.value }));
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
     if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
-    if (action === 'gerar-eliminatoria') el.addEventListener('click', () => gerarEliminatoriaHandler(currentCategoria()));
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
     if (action === 'tab') el.addEventListener('click', () => { tab = el.dataset.tab; render(); });
     if (['score-a', 'score-b', 'gscore-a', 'gscore-b', 'bscore-a', 'bscore-b'].includes(action)) {
@@ -563,6 +593,10 @@ function bindEvents() {
   if (newPlayerInput) newPlayerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addPlayerHandler(); });
   const newTeamInput = document.getElementById('new-team');
   if (newTeamInput) newTeamInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addTeamHandler(); });
+  const pubPlayerInput = document.getElementById('pub-player-name');
+  if (pubPlayerInput) pubPlayerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddPlayerHandler(); });
+  const pubTeamInput = document.getElementById('pub-team-name');
+  if (pubTeamInput) pubTeamInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
   const newCatInput = document.getElementById('new-cat');
   if (newCatInput) newCatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCategoriaHandler(); });
 }
@@ -616,6 +650,30 @@ function addTeamHandler() {
   const categoria = catSelect ? catSelect.value : '';
   persist({ ...state, teams: [...state.teams, { id: uid(), name, categoria }] });
 }
+function pubAddPlayerHandler() {
+  const input = document.getElementById('pub-player-name');
+  const name = input.value.trim();
+  if (!name) return;
+  const catKey = currentCategoria();
+  const categoria = catKey === DEFAULT_CAT ? '' : catKey;
+  persist({ ...state, players: [...state.players, { id: uid(), name, categoria }] });
+  input.value = '';
+  pubSignupFlash = `"${name}" inscrita(o) ✓`;
+  render();
+  setTimeout(() => { pubSignupFlash = null; render(); }, 2500);
+}
+function pubAddTeamHandler() {
+  const input = document.getElementById('pub-team-name');
+  const name = input.value.trim();
+  if (!name) return;
+  const catKey = currentCategoria();
+  const categoria = catKey === DEFAULT_CAT ? '' : catKey;
+  persist({ ...state, teams: [...state.teams, { id: uid(), name, categoria }] });
+  input.value = '';
+  pubSignupFlash = `"${name}" inscrita ✓`;
+  render();
+  setTimeout(() => { pubSignupFlash = null; render(); }, 2500);
+}
 function sortearHandler() {
   const newRounds = { ...state.rounds };
   let algumaGerada = false;
@@ -644,11 +702,24 @@ function gerarGruposHandler() {
   if (!novosGrupos.length) return;
   persist({ ...state, grupos: novosGrupos, eliminatorias: {} });
 }
-function gerarEliminatoriaHandler(catKey) {
-  const catGroups = state.grupos.filter((g) => g.categoria === catKey);
-  if (!catGroups.length || !allGroupMatchesScored(catGroups)) return;
+function gerarEliminatoriaSeNecessario(grupos, catKey, eliminatoriasAtuais) {
+  const catGroups = grupos.filter((g) => g.categoria === catKey);
+  const jaExiste = eliminatoriasAtuais[catKey] && eliminatoriasAtuais[catKey].length;
+  if (jaExiste || !catGroups.length || !allGroupMatchesScored(catGroups)) return eliminatoriasAtuais;
   const bracket = generateEliminationFromGroups(catGroups);
-  persist({ ...state, eliminatorias: { ...state.eliminatorias, [catKey]: bracket } });
+  return { ...eliminatoriasAtuais, [catKey]: bracket };
+}
+function saveGroupScoreHandler(matchId) {
+  const d = drafts[matchId];
+  if (!d || d.a === '' || d.b === '') return;
+  const a = Number(d.a), b = Number(d.b);
+  if (a === b) { alert('Não pode empatar — ajuste o placar.'); return; }
+  const grupos = state.grupos.map((g) => ({ ...g, matches: g.matches.map((m) => m.id === matchId ? { ...m, scoreA: a, scoreB: b } : m) }));
+  const scoredGroup = grupos.find((g) => g.matches.some((m) => m.id === matchId));
+  const eliminatorias = scoredGroup ? gerarEliminatoriaSeNecessario(grupos, scoredGroup.categoria, state.eliminatorias) : state.eliminatorias;
+  persist({ ...state, grupos, eliminatorias });
+  savedFlash = matchId; render();
+  setTimeout(() => { savedFlash = null; render(); }, 1500);
 }
 function gerarFinalHandler() {
   const catKey = currentCategoria();
@@ -666,16 +737,6 @@ function saveScoreHandler(matchId) {
     newRounds[catKey] = newRounds[catKey].map((rd) => ({ ...rd, matches: rd.matches.map((m) => m.id === matchId ? { ...m, scoreA: Number(d.a), scoreB: Number(d.b) } : m) }));
   });
   persist({ ...state, rounds: newRounds });
-  savedFlash = matchId; render();
-  setTimeout(() => { savedFlash = null; render(); }, 1500);
-}
-function saveGroupScoreHandler(matchId) {
-  const d = drafts[matchId];
-  if (!d || d.a === '' || d.b === '') return;
-  const a = Number(d.a), b = Number(d.b);
-  if (a === b) { alert('Não pode empatar — ajuste o placar.'); return; }
-  const grupos = state.grupos.map((g) => ({ ...g, matches: g.matches.map((m) => m.id === matchId ? { ...m, scoreA: a, scoreB: b } : m) }));
-  persist({ ...state, grupos });
   savedFlash = matchId; render();
   setTimeout(() => { savedFlash = null; render(); }, 1500);
 }
