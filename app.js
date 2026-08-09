@@ -550,12 +550,12 @@ function renderMatch(m, ri) {
 }
 function renderRanking(stats) {
   if (!stats.length) return `<div class="card-body hint">Nenhum resultado lançado ainda.</div>`;
-  return `<table class="ranking"><thead><tr><th>#</th><th>Jogadora</th><th>J</th><th>V</th><th>SS</th><th>SG</th><th>Pts</th></tr></thead><tbody>
+  return `<div class="table-scroll"><table class="ranking"><thead><tr><th>#</th><th>Jogadora</th><th>J</th><th>V</th><th>SS</th><th>SG</th><th>Pts</th></tr></thead><tbody>
     ${stats.map((s, i) => {
       const ss = s.vitorias - s.derrotas;
       return `<tr><td class="${i < 3 ? 'top' : ''}">${i + 1}</td><td>${esc(s.name)}</td><td class="c">${s.partidas}</td><td class="c">${s.vitorias}</td><td class="c">${ss > 0 ? '+' + ss : ss}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td><td class="pts">${s.pontos}</td></tr>`;
     }).join('')}
-  </tbody></table>`;
+  </tbody></table></div>`;
 }
 
 // ---------- grupos + eliminatória (Chaves) ----------
@@ -579,6 +579,7 @@ function renderGroupCard(g) {
   return `
   <div class="round-block">
     <div class="round-title"><span>${esc(g.nome)}</span></div>
+    <div class="table-scroll">
     <table class="ranking" style="margin-bottom:10px">
       <thead><tr><th>#</th><th>Dupla</th><th>V</th><th>Saldo Sets</th><th>Saldo Games</th></tr></thead>
       <tbody>${standings.map((s, i) => {
@@ -586,6 +587,7 @@ function renderGroupCard(g) {
         return `<tr><td class="${i < 2 ? 'top' : ''}">${i + 1}</td><td>${esc(teamNameOf(s.id))}</td><td class="c">${s.vitorias}</td><td class="c">${ss > 0 ? '+' + ss : ss}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td></tr>`;
       }).join('')}</tbody>
     </table>
+    </div>
     <div class="matches">${g.matches.map((m) => renderGroupMatch(m)).join('')}</div>
   </div>`;
 }
