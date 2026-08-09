@@ -429,8 +429,8 @@ function renderLobby() {
       ${lista !== null && listaParaMostrar.length === 0 ? `<div class="hint">${isAdmin ? 'Nenhum torneio criado ainda.' : 'Nenhum torneio publicado no momento.'}</div>` : ''}
       <div class="groups-wrap">
         ${listaParaMostrar.map((t) => `
-          <div class="round-block torneio-card">
-            <div class="round-title" data-action="abrir-torneio" data-id="${t.id}" style="cursor:pointer"><span>${esc(t.name || 'Torneio sem nome')}</span>${isAdmin ? `<span class="badge-${t.visivelPublico ? 'ok' : 'pending'}">${t.visivelPublico ? '✓ publicado' : '⏳ rascunho'}</span>` : ''}</div>
+          <div class="round-block torneio-card" data-action="abrir-torneio" data-id="${t.id}">
+            <div class="round-title"><span>${esc(t.name || 'Torneio sem nome')}</span>${isAdmin ? `<span class="badge-${t.visivelPublico ? 'ok' : 'pending'}">${t.visivelPublico ? '✓ publicado' : '⏳ rascunho'}</span>` : ''}</div>
             <div class="hint" style="text-align:left">${formatDataRange(t) || 'Data não definida'} · ${t.tipo === 'chaves' ? 'Torneio (chaves)' : t.tipo === 'mini' ? 'Americano + Final' : 'Americano'}</div>
             ${isAdmin ? `<button class="mode-btn" style="margin-top:8px" data-action="publicar-torneio" data-id="${t.id}" data-atual="${t.visivelPublico ? '1' : '0'}">${t.visivelPublico ? 'Despublicar' : 'Publicar torneio'}</button>` : ''}
           </div>
@@ -917,7 +917,10 @@ function renderPinModal() {
   return `<div class="modal-bg" data-action="close-pin-bg"><div class="modal" data-action="stop-bubble">
     <div class="modal-title">Entrar como admin</div>
     <input id="login-user" placeholder="Usuário" autofocus style="margin-bottom:8px" />
-    <input id="login-pass" type="password" placeholder="Senha" />
+    <div class="pass-wrap">
+      <input id="login-pass" type="password" placeholder="Senha" />
+      <button type="button" class="toggle-pass" data-action="toggle-pass" title="Mostrar senha">👁</button>
+    </div>
     <div id="pin-error" class="pin-error"></div>
     <div class="modal-actions"><button data-action="close-pin">Cancelar</button><button class="btn-primary" data-action="try-unlock">Entrar</button></div>
   </div></div>`;
@@ -1038,6 +1041,14 @@ function bindPinModal() {
   document.querySelector('[data-action="try-unlock"]')?.addEventListener('click', tryUnlock);
   document.getElementById('login-user')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
   document.getElementById('login-pass')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
+  document.querySelector('[data-action="toggle-pass"]')?.addEventListener('click', (e) => {
+    const input = document.getElementById('login-pass');
+    const isHidden = input.type === 'password';
+    input.type = isHidden ? 'text' : 'password';
+    e.currentTarget.textContent = isHidden ? '🙈' : '👁';
+    e.currentTarget.title = isHidden ? 'Ocultar senha' : 'Mostrar senha';
+    input.focus();
+  });
 }
 function closePinModal() { document.getElementById('pin-modal-slot').innerHTML = ''; }
 async function tryUnlock() {
