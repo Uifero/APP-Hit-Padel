@@ -1,8 +1,12 @@
 {
   "rules": {
-    "tournament": {
+    "torneios": {
       ".read": true,
       ".write": true
+    },
+    "tournament": {
+      ".read": true,
+      ".write": false
     }
   }
 }
