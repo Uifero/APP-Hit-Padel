@@ -6,7 +6,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 const auth = getAuth(app);
-const tRef = ref(db, 'tournament');
+const torneiosRef = ref(db, 'torneios');
 const ADMIN_EMAIL_DOMAIN = '@hitpadel.local';
 
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -248,23 +248,90 @@ let tab = 'rodadas';
 let setupOpen = true;
 let drafts = {};
 let savedFlash = null;
+let editingMatches = new Set();
 let selectedCategoria = null;
 let jogosFiltroData = 'todas';
 let pubSignupFlash = null;
+let currentTournamentId = null;
+let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
+let unsubscribeTournament = null;
+let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
+let novoTorneioNome = '';
 
 const root = document.getElementById('root');
 
 async function persist(next) {
   state = next; render();
-  try { await set(tRef, next); } catch (e) { console.error('Falha ao salvar', e); }
+  if (!currentTournamentId) return;
+  try { await set(ref(db, 'torneios/' + currentTournamentId), next); } catch (e) { console.error('Falha ao salvar', e); }
 }
-onValue(tRef, (snap) => {
-  if (snap.exists()) { state = { ...defaultState(), ...snap.val() }; } else { state = defaultState(); set(tRef, state); }
+
+function getUrlTournamentId() {
+  return new URLSearchParams(window.location.search).get('t');
+}
+
+function selecionarTorneio(id) {
+  currentTournamentId = id;
+  painelAdmin = null;
+  tab = 'rodadas';
+  selectedCategoria = null;
+  const url = new URL(window.location.href);
+  if (id) url.searchParams.set('t', id); else url.searchParams.delete('t');
+  window.history.pushState({}, '', url);
+  carregarTorneioAtual();
+  render();
+}
+
+function carregarTorneioAtual() {
+  if (unsubscribeTournament) { unsubscribeTournament(); unsubscribeTournament = null; }
+  if (!currentTournamentId) { state = null; return; }
+  const r = ref(db, 'torneios/' + currentTournamentId);
+  unsubscribeTournament = onValue(r, (snap) => {
+    if (snap.exists()) { state = { ...defaultState(), ...snap.val() }; }
+    else { state = defaultState(); set(r, state); }
+    render();
+  });
+}
+
+async function criarNovoTorneio(nome) {
+  const id = uid() + uid();
+  const novo = { ...defaultState(), name: nome || 'Novo torneio' };
+  try { await set(ref(db, 'torneios/' + id), novo); } catch (e) { console.error('Falha ao criar torneio', e); }
+  selecionarTorneio(id);
+}
+
+let migracaoTentada = false;
+async function migrarTorneioLegado() {
+  if (migracaoTentada) return;
+  migracaoTentada = true;
+  if (torneiosList && Object.keys(torneiosList).length > 0) return; // já tem torneio(s), não precisa migrar
+  try {
+    const legadoSnap = await get(ref(db, 'tournament'));
+    if (!legadoSnap.exists()) return;
+    const legado = legadoSnap.val();
+    if (!legado || (!legado.players?.length && !legado.teams?.length)) return;
+    const id = uid() + uid();
+    await set(ref(db, 'torneios/' + id), { ...defaultState(), ...legado });
+    console.log('Torneio anterior migrado para o novo formato com sucesso:', id);
+  } catch (e) { console.error('Falha ao migrar torneio antigo', e); }
+}
+
+onValue(torneiosRef, (snap) => {
+  torneiosList = snap.val() || {};
+  migrarTorneioLegado();
   render();
 });
-get(tRef).then((snap) => { if (!snap.exists()) set(tRef, defaultState()); });
+
 onAuthStateChanged(auth, (user) => {
   isAdmin = !!user;
+  render();
+});
+
+currentTournamentId = getUrlTournamentId();
+if (currentTournamentId) carregarTorneioAtual();
+window.addEventListener('popstate', () => {
+  currentTournamentId = getUrlTournamentId();
+  carregarTorneioAtual();
   render();
 });
 
@@ -291,6 +358,7 @@ function formatDataRange(state) {
 }
 
 function render() {
+  if (!currentTournamentId) { renderLobby(); return; }
   if (!state) { root.innerHTML = '<div class="loading">Carregando quadra...</div>'; return; }
   const isChaves = state.tipo === 'chaves';
   const catKeys = categoriaKeys(state);
@@ -317,11 +385,14 @@ function render() {
             <div class="hp-live">${dataRangeTxt ? `<span>${esc(dataRangeTxt)}</span> · ` : ''}<span class="dot"></span> ao vivo</div>
           </div>
         </div>
-        <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
+        <div class="hp-header-actions">
+          <button class="hp-back-btn" data-action="voltar-lobby">◀ Meus torneios</button>
+          <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
+        </div>
       </div>
     </header>
     <main class="hp-main">
-      ${showSetup ? renderSetup(maxCourts) : ''}
+      ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams) : ''}
       ${ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
       ${catKeys.length > 1 ? renderCategoriaTabs(catKeys, catKey) : ''}
       ${renderInscricaoPublica()}
@@ -329,6 +400,50 @@ function render() {
       ${(catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
       ${isChaves ? renderGroupsAndElimination(catGroups, catElim, catTeams, catKey) : renderAmericanoView(catRounds, stats, catPlayers, catKey)}
       `}
+    </main>
+    <div id="pin-modal-slot"></div>
+    <footer class="hp-footer">atualiza automaticamente</footer>
+  `;
+  bindEvents();
+}
+
+function renderLobby() {
+  const dataRangeTxtLobby = '';
+  const lista = torneiosList ? Object.entries(torneiosList).map(([id, t]) => ({ id, ...t })) : null;
+  const meus = lista || [];
+  const publicados = meus.filter((t) => t.visivelPublico);
+  const listaParaMostrar = isAdmin ? meus : publicados;
+  root.innerHTML = `
+    <header class="hp-header">
+      <div class="hp-header-inner">
+        <div class="hp-brand">
+          <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
+          <div><div class="hp-name">HIT PADEL</div><div class="hp-live"><span class="dot"></span> ao vivo</div></div>
+        </div>
+        <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
+      </div>
+    </header>
+    <main class="hp-main">
+      <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Meus torneios' : 'Torneios em andamento'}</span></div>
+      ${lista === null ? '<div class="hint">Carregando...</div>' : ''}
+      ${lista !== null && listaParaMostrar.length === 0 ? `<div class="hint">${isAdmin ? 'Nenhum torneio criado ainda.' : 'Nenhum torneio publicado no momento.'}</div>` : ''}
+      <div class="groups-wrap">
+        ${listaParaMostrar.map((t) => `
+          <div class="round-block torneio-card">
+            <div class="round-title" data-action="abrir-torneio" data-id="${t.id}" style="cursor:pointer"><span>${esc(t.name || 'Torneio sem nome')}</span>${isAdmin ? `<span class="badge-${t.visivelPublico ? 'ok' : 'pending'}">${t.visivelPublico ? '✓ publicado' : '⏳ rascunho'}</span>` : ''}</div>
+            <div class="hint" style="text-align:left">${formatDataRange(t) || 'Data não definida'} · ${t.tipo === 'chaves' ? 'Torneio (chaves)' : t.tipo === 'mini' ? 'Americano + Final' : 'Americano'}</div>
+            ${isAdmin ? `<button class="mode-btn" style="margin-top:8px" data-action="publicar-torneio" data-id="${t.id}" data-atual="${t.visivelPublico ? '1' : '0'}">${t.visivelPublico ? 'Despublicar' : 'Publicar torneio'}</button>` : ''}
+          </div>
+        `).join('')}
+      </div>
+      ${isAdmin ? `
+      <div class="card" style="margin-top:20px">
+        <div class="card-head-static">+ Criar novo torneio</div>
+        <div class="card-body">
+          <div class="field"><input id="novo-torneio-nome" placeholder="Nome do torneio" /></div>
+          <button class="btn-primary" data-action="criar-torneio">Criar e abrir</button>
+        </div>
+      </div>` : ''}
     </main>
     <div id="pin-modal-slot"></div>
     <footer class="hp-footer">atualiza automaticamente</footer>
@@ -406,59 +521,134 @@ function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
   `;
 }
 
-function renderSetup(maxCourts) {
+function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
+  if (painelAdmin) return renderPainelModulo(painelAdmin, maxCourts, catPlayers, catTeams);
   const catKey = currentCategoria();
-  const catPlayers = state.players.filter((p) => categoriaOf(p) === catKey);
-  const minRounds = minRoundsForFullCoverage(catPlayers.length, Math.min(state.numCourts, maxCourts));
+  const totalConfirmadas = state.tipo === 'chaves'
+    ? state.teams.filter((t) => categoriaOf(t) === catKey && t.confirmada).length
+    : catPlayers.filter((p) => p.confirmada).length;
+  const rodadasGeradas = (state.rounds[catKey] || []).length;
+  const gruposGerados = state.grupos.filter((g) => g.categoria === catKey).length;
+  const tipoLabel = state.tipo === 'chaves' ? 'Torneio' : state.tipo === 'mini' ? 'Americano + Final' : 'Americano';
   return `
   <section class="card">
-    <button class="card-head" data-action="toggle-setup"><span>Configuração</span><span>${setupOpen ? '▲' : '▼'}</span></button>
-    ${setupOpen ? `
+    <div class="card-head-static">📋 Painel de gestão</div>
     <div class="card-body">
-      ${isAdmin ? `
-        <div class="field">
-          <label>Visibilidade pro público</label>
-          <button class="mode-btn ${state.visivelPublico ? 'active' : ''}" data-action="toggle-visivel">${state.visivelPublico ? '✓ Visível (torneio postado)' : 'Oculto'}</button>
-          <div class="hint" style="text-align:left;margin-top:4px">${state.visivelPublico ? 'Qualquer pessoa com o link já vê rodadas, chaves e ranking.' : 'Ninguém vê nada do torneio ainda (nem rodadas, nem inscritos). Ative quando quiser divulgar.'}</div>
-        </div>
-        <div class="row2">
-          <div class="field"><label>Data de início</label><input type="date" id="data-inicio" value="${esc(state.dataInicio)}" data-action="set-data-inicio" /></div>
-          <div class="field"><label>Data de término</label><input type="date" id="data-fim" value="${esc(state.dataFim)}" data-action="set-data-fim" /></div>
-        </div>
-        <div class="field">
-          <label>Inscrições públicas</label>
-          <button class="mode-btn ${state.inscricoesAbertas ? 'active' : ''}" data-action="toggle-inscricoes">${state.inscricoesAbertas ? '✓ Abertas (torneio postado)' : 'Fechadas'}</button>
-          <div class="hint" style="text-align:left;margin-top:4px">${state.inscricoesAbertas ? 'Qualquer pessoa com o link já pode se inscrever sozinha.' : 'Ninguém vê o formulário de inscrição ainda. Ative quando o torneio estiver pronto pra divulgar.'}</div>
-        </div>
-        <div class="field">
-          <label>Tipo de torneio</label>
-          <div class="mode-row">
-            <button class="mode-btn ${state.tipo === 'americano' ? 'active' : ''}" data-action="set-tipo" data-tipo="americano">Americano</button>
-            <button class="mode-btn ${state.tipo === 'mini' ? 'active' : ''}" data-action="set-tipo" data-tipo="mini">Americano + Final</button>
-            <button class="mode-btn ${state.tipo === 'chaves' ? 'active' : ''}" data-action="set-tipo" data-tipo="chaves">Torneio</button>
-          </div>
-          <div class="hint" style="text-align:left;margin-top:4px">
-            ${state.tipo === 'americano' ? 'Duplas rotativas, todo mundo joga com e contra todo mundo o máximo possível. Ranking individual (desempate: pontos → vitórias → confronto direto).' : ''}
-            ${state.tipo === 'mini' ? 'Igual ao Americano, mas ao final você gera uma grande final com as 4 melhores colocadas.' : ''}
-            ${state.tipo === 'chaves' ? 'Duplas fixas em chaves de 2 ou 3 (todas contra todas dentro da chave). As 2 melhores de cada chave avançam automaticamente pra eliminatória (oitavas/quartas/semi/final), gerada sozinha assim que os placares da fase de chaves terminam. Desempate: vitórias → saldo de sets → confronto direto.' : ''}
-          </div>
-        </div>
-
-        ${renderCategoriasSetup()}
-        ${state.tipo === 'chaves' ? renderTeamsSetup() : renderPlayersSetup(maxCourts, minRounds)}
-
-        <div class="field"><label>Login de admin</label><div class="hint" style="text-align:left">Gerenciado no Firebase Authentication (não fica salvo aqui). Peça pro seu desenvolvedor pra trocar a senha lá se precisar.</div></div>
-
-        ${state.tipo === 'chaves' ? `
-          <button class="btn-primary" data-action="gerar-grupos">Gerar chaves</button>
-          <div class="hint">Cadastre pelo menos 2 duplas por categoria</div>
-        ` : `
-          <button class="btn-primary" data-action="sortear">Sortear rodadas</button>
-          <div class="hint">Cadastre pelo menos 4 jogadoras por categoria</div>
-        `}
-      ` : `<div class="hint">O torneio ainda não foi configurado. Peça para o organizador entrar como admin.</div>`}
-    </div>` : ''}
+      <div class="dash-grid">
+        <button class="dash-card" data-action="abrir-painel" data-painel="config">
+          <div class="dash-title">Configurações</div>
+          <div class="dash-sub">${esc(tipoLabel)}${state.categorias.length ? ` · ${state.categorias.length} categoria(s)` : ''}</div>
+        </button>
+        <button class="dash-card" data-action="abrir-painel" data-painel="quadras">
+          <div class="dash-title">Quadras e Rodadas</div>
+          <div class="dash-sub">${state.numCourts} quadra(s) · ${state.numRounds} rodada(s)</div>
+        </button>
+        <button class="dash-card" data-action="abrir-painel" data-painel="inscricoes">
+          <div class="dash-title">Inscrições</div>
+          <div class="dash-sub">${state.tipo === 'chaves' ? state.teams.length : state.players.length} no total</div>
+        </button>
+        <button class="dash-card" data-action="abrir-painel" data-painel="duplas">
+          <div class="dash-title">Duplas</div>
+          <div class="dash-sub">${totalConfirmadas} confirmada(s)</div>
+        </button>
+        <button class="dash-card" data-action="abrir-painel" data-painel="chaveamento">
+          <div class="dash-title">Chaveamento</div>
+          <div class="dash-sub">${state.tipo === 'chaves' ? `${gruposGerados} chave(s)` : `${rodadasGeradas} rodada(s)`}</div>
+        </button>
+        <button class="dash-card" data-action="ir-jogos">
+          <div class="dash-title">Jogos</div>
+          <div class="dash-sub">Ver e agendar horários</div>
+        </button>
+      </div>
+    </div>
   </section>`;
+}
+
+function renderPainelModulo(painel, maxCourts, catPlayers, catTeams) {
+  const minRounds = minRoundsForFullCoverage(catPlayers.length, Math.min(state.numCourts, maxCourts));
+  const titulos = { config: 'Configurações', quadras: 'Quadras e Rodadas', inscricoes: 'Inscrições', duplas: 'Duplas', chaveamento: 'Chaveamento' };
+  let content = '';
+  if (painel === 'config') content = renderConfigModulo();
+  else if (painel === 'quadras') content = renderQuadrasModulo(maxCourts);
+  else if (painel === 'inscricoes') content = state.tipo === 'chaves' ? renderTeamsSetup() : renderPlayersSetup(minRounds);
+  else if (painel === 'duplas') content = renderDuplasModulo(catTeams, catPlayers);
+  else if (painel === 'chaveamento') content = renderChaveamentoModulo();
+  return `
+  <section class="card">
+    <button class="card-head" data-action="fechar-painel"><span>← ${esc(titulos[painel] || 'Voltar')}</span><span>▲</span></button>
+    <div class="card-body">${content}</div>
+  </section>`;
+}
+
+function renderConfigModulo() {
+  return `
+    <div class="field">
+      <label>Visibilidade pro público</label>
+      <button class="mode-btn ${state.visivelPublico ? 'active' : ''}" data-action="toggle-visivel">${state.visivelPublico ? '✓ Visível (torneio postado)' : 'Oculto'}</button>
+      <div class="hint" style="text-align:left;margin-top:4px">${state.visivelPublico ? 'Qualquer pessoa com o link já vê rodadas, chaves e ranking.' : 'Ninguém vê nada do torneio ainda. Ative quando quiser divulgar.'}</div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Data de início</label><input type="date" id="data-inicio" value="${esc(state.dataInicio)}" data-action="set-data-inicio" /></div>
+      <div class="field"><label>Data de término</label><input type="date" id="data-fim" value="${esc(state.dataFim)}" data-action="set-data-fim" /></div>
+    </div>
+    <div class="field">
+      <label>Inscrições públicas</label>
+      <button class="mode-btn ${state.inscricoesAbertas ? 'active' : ''}" data-action="toggle-inscricoes">${state.inscricoesAbertas ? '✓ Abertas' : 'Fechadas'}</button>
+      <div class="hint" style="text-align:left;margin-top:4px">${state.inscricoesAbertas ? 'Qualquer pessoa com o link já pode se inscrever sozinha.' : 'Ninguém vê o formulário de inscrição ainda.'}</div>
+    </div>
+    <div class="field">
+      <label>Tipo de torneio</label>
+      <div class="mode-row">
+        <button class="mode-btn ${state.tipo === 'americano' ? 'active' : ''}" data-action="set-tipo" data-tipo="americano">Americano</button>
+        <button class="mode-btn ${state.tipo === 'mini' ? 'active' : ''}" data-action="set-tipo" data-tipo="mini">Americano + Final</button>
+        <button class="mode-btn ${state.tipo === 'chaves' ? 'active' : ''}" data-action="set-tipo" data-tipo="chaves">Torneio</button>
+      </div>
+      <div class="hint" style="text-align:left;margin-top:4px">
+        ${state.tipo === 'americano' ? 'Duplas rotativas, todo mundo joga com e contra todo mundo o máximo possível. Desempate: pontos → vitórias → confronto direto.' : ''}
+        ${state.tipo === 'mini' ? 'Igual ao Americano, mas ao final você gera uma grande final com as 4 melhores colocadas.' : ''}
+        ${state.tipo === 'chaves' ? 'Duplas fixas em chaves de 2 ou 3. As 2 melhores avançam pra eliminatória automaticamente. Desempate: vitórias → saldo de sets → confronto direto.' : ''}
+      </div>
+    </div>
+    ${renderCategoriasSetup()}
+    <div class="field"><label>Login de admin</label><div class="hint" style="text-align:left">Gerenciado no Firebase Authentication.</div></div>
+  `;
+}
+
+function renderQuadrasModulo(maxCourts) {
+  return `
+    <div class="row2">
+      <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
+      <div class="field"><label>Rodadas</label><input type="number" min="1" max="30" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
+    </div>
+    <div class="field">
+      <label>Nome das quadras</label>
+      <div class="row2">
+        ${Array.from({ length: state.numCourts }, (_, i) => `<input class="court-name-input" data-action="set-court-name" data-idx="${i}" value="${esc(state.nomesQuadras[i] || `Quadra ${String(i + 1).padStart(2, '0')}`)}" />`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderDuplasModulo(catTeams, catPlayers) {
+  if (state.tipo === 'chaves') {
+    const confirmadas = catTeams.filter((t) => t.confirmada && !t.oculto);
+    if (!confirmadas.length) return `<div class="hint">Nenhuma dupla confirmada ainda nessa categoria.</div>`;
+    return `<div class="chips">${confirmadas.map((t) => `<span class="chip">${esc(t.name)}</span>`).join('')}</div>`;
+  }
+  const confirmadas = catPlayers.filter((p) => p.confirmada && !p.oculto);
+  if (!confirmadas.length) return `<div class="hint">Nenhuma jogadora confirmada ainda nessa categoria.</div>`;
+  return `<div class="hint" style="text-align:left;margin-bottom:8px">Duplas se formam automaticamente no sorteio (Americano) — esta lista é só das jogadoras confirmadas.</div>
+    <div class="chips">${confirmadas.map((p) => `<span class="chip">${esc(p.name)}</span>`).join('')}</div>`;
+}
+
+function renderChaveamentoModulo() {
+  return state.tipo === 'chaves' ? `
+    <button class="btn-primary" data-action="gerar-grupos">Gerar chaves</button>
+    <div class="hint">Cadastre pelo menos 2 duplas por categoria em "Inscrições" primeiro.</div>
+  ` : `
+    <button class="btn-primary" data-action="sortear">Sortear rodadas</button>
+    <div class="hint">Cadastre pelo menos 4 jogadoras por categoria em "Inscrições" primeiro.</div>
+  `;
 }
 
 function renderCategoriasSetup() {
@@ -474,7 +664,7 @@ function renderCategoriasSetup() {
     </div>`;
 }
 
-function renderPlayersSetup(maxCourts, minRounds) {
+function renderPlayersSetup(minRounds) {
   const showCatSelect = state.categorias.length > 0;
   return `
     <div class="field">
@@ -488,17 +678,7 @@ function renderPlayersSetup(maxCourts, minRounds) {
         <button data-action="add-player">+</button>
       </div>
     </div>
-    <div class="row2">
-      <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
-      <div class="field"><label>Rodadas</label><input type="number" min="1" max="30" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
-    </div>
-    <div class="field">
-      <label>Nome das quadras</label>
-      <div class="row2">
-        ${Array.from({ length: state.numCourts }, (_, i) => `<input class="court-name-input" data-action="set-court-name" data-idx="${i}" value="${esc(state.nomesQuadras[i] || `Quadra ${String(i + 1).padStart(2, '0')}`)}" />`).join('')}
-      </div>
-    </div>
-    ${minRounds > 0 ? `<div class="hint" style="text-align:left">Com ${state.players.filter((p) => categoriaOf(p) === currentCategoria()).length} jogadoras (categoria atual) e ${Math.min(state.numCourts, maxCourts)} quadra(s), seriam necessárias <b>~${minRounds} rodadas</b> pra cobertura total.</div>` : ''}
+    ${minRounds > 0 ? `<div class="hint" style="text-align:left">Com ${state.players.filter((p) => categoriaOf(p) === currentCategoria()).length} jogadoras (categoria atual) e ${state.numCourts} quadra(s), seriam necessárias <b>~${minRounds} rodadas</b> pra cobertura total.</div>` : ''}
   `;
 }
 
@@ -533,29 +713,43 @@ function quadraNome(state, courtNum) {
 function renderMatch(m, ri) {
   const d = drafts[m.id] || { a: m.scoreA ?? '', b: m.scoreB ?? '' };
   const done = m.scoreA != null && m.scoreB != null;
+  const editing = editingMatches.has(m.id);
+  const showInputs = isAdmin && (!done || editing);
   return `
   <div class="match">
-    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${done ? '<span class="check">✓</span>' : ''}</div>
+    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${done && !editing ? '<span class="check">✓</span>' : ''}</div>
     <div class="team-row">
       <span class="team-name">${m.teamA.map(nameOf).map(esc).join(' + ')}</span>
-      ${isAdmin ? `<input type="number" min="0" class="score-input" data-action="score-a" data-match="${m.id}" value="${d.a}" />` : `<span class="score">${m.scoreA ?? '–'}</span>`}
+      ${showInputs ? `<input type="number" min="0" class="score-input" data-action="score-a" data-match="${m.id}" value="${d.a}" />` : `<span class="score">${m.scoreA ?? '–'}</span>`}
     </div>
     <div class="vs">×</div>
     <div class="team-row">
       <span class="team-name">${m.teamB.map(nameOf).map(esc).join(' + ')}</span>
-      ${isAdmin ? `<input type="number" min="0" class="score-input" data-action="score-b" data-match="${m.id}" value="${d.b}" />` : `<span class="score">${m.scoreB ?? '–'}</span>`}
+      ${showInputs ? `<input type="number" min="0" class="score-input" data-action="score-b" data-match="${m.id}" value="${d.b}" />` : `<span class="score">${m.scoreB ?? '–'}</span>`}
     </div>
-    ${isAdmin ? `<button class="btn-save" data-action="save-score" data-match="${m.id}">${savedFlash === m.id ? 'Salvo ✓' : 'Salvar placar'}</button>` : ''}
+    ${isAdmin && showInputs ? `<button class="btn-save" data-action="save-score" data-match="${m.id}">${done ? 'Salvar alteração' : 'Salvar placar'}</button>` : ''}
+    ${isAdmin && done && !editing ? `<div class="saved-row"><span class="saved-tag">✓ Salvo</span><button class="btn-edit" data-action="edit-score" data-match="${m.id}">Editar</button></div>` : ''}
   </div>`;
+}
+function hasEmpate(list, keyFn) {
+  const seen = new Set();
+  for (const item of list) {
+    const k = keyFn(item);
+    if (seen.has(k)) return true;
+    seen.add(k);
+  }
+  return false;
 }
 function renderRanking(stats) {
   if (!stats.length) return `<div class="card-body hint">Nenhum resultado lançado ainda.</div>`;
+  const empatou = hasEmpate(stats, (s) => `${s.pontos}|${s.vitorias}`);
   return `<div class="table-scroll"><table class="ranking"><thead><tr><th>#</th><th>Jogadora</th><th>J</th><th>V</th><th>SS</th><th>SG</th><th>Pts</th></tr></thead><tbody>
     ${stats.map((s, i) => {
       const ss = s.vitorias - s.derrotas;
       return `<tr><td class="${i < 3 ? 'top' : ''}">${i + 1}</td><td>${esc(s.name)}</td><td class="c">${s.partidas}</td><td class="c">${s.vitorias}</td><td class="c">${ss > 0 ? '+' + ss : ss}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td><td class="pts">${s.pontos}</td></tr>`;
     }).join('')}
-  </tbody></table></div>`;
+  </tbody></table></div>
+  ${empatou ? `<div class="hint" style="margin-top:8px">Houve empate em pontos/vitórias — desempate aplicado: pontos → vitórias → confronto direto.</div>` : ''}`;
 }
 
 // ---------- grupos + eliminatória (Chaves) ----------
@@ -576,6 +770,7 @@ function renderGroupsAndElimination(catGroups, catElim, catTeams, catKey) {
 }
 function renderGroupCard(g) {
   const standings = computeGroupStandings(g);
+  const empatou = hasEmpate(standings, (s) => `${s.vitorias}|${s.saldo}`);
   return `
   <div class="round-block">
     <div class="round-title"><span>${esc(g.nome)}</span></div>
@@ -588,21 +783,25 @@ function renderGroupCard(g) {
       }).join('')}</tbody>
     </table>
     </div>
+    ${empatou ? `<div class="hint" style="margin-bottom:8px">Houve empate em vitórias/saldo — desempate aplicado: vitórias → saldo de sets → confronto direto.</div>` : ''}
     <div class="matches">${g.matches.map((m) => renderGroupMatch(m)).join('')}</div>
   </div>`;
 }
 function renderGroupMatch(m) {
   const d = drafts[m.id] || { a: m.scoreA ?? '', b: m.scoreB ?? '' };
   const done = m.scoreA != null && m.scoreB != null;
+  const editing = editingMatches.has(m.id);
+  const showInputs = isAdmin && (!done || editing);
   return `
   <div class="match">
-    <div class="match-head"><span></span>${done ? '<span class="check">✓</span>' : ''}</div>
+    <div class="match-head"><span></span>${done && !editing ? '<span class="check">✓</span>' : ''}</div>
     <div class="team-row"><span class="team-name">${esc(teamNameOf(m.teamA))}</span>
-      ${isAdmin && !done ? `<input type="number" min="0" class="score-input" data-action="gscore-a" data-match="${m.id}" value="${d.a}" />` : `<span class="score">${m.scoreA ?? '–'}</span>`}</div>
+      ${showInputs ? `<input type="number" min="0" class="score-input" data-action="gscore-a" data-match="${m.id}" value="${d.a}" />` : `<span class="score">${m.scoreA ?? '–'}</span>`}</div>
     <div class="vs">×</div>
     <div class="team-row"><span class="team-name">${esc(teamNameOf(m.teamB))}</span>
-      ${isAdmin && !done ? `<input type="number" min="0" class="score-input" data-action="gscore-b" data-match="${m.id}" value="${d.b}" />` : `<span class="score">${m.scoreB ?? '–'}</span>`}</div>
-    ${isAdmin && !done ? `<button class="btn-save" data-action="save-group-score" data-match="${m.id}">${savedFlash === m.id ? 'Salvo ✓' : 'Salvar placar'}</button>` : ''}
+      ${showInputs ? `<input type="number" min="0" class="score-input" data-action="gscore-b" data-match="${m.id}" value="${d.b}" />` : `<span class="score">${m.scoreB ?? '–'}</span>`}</div>
+    ${isAdmin && showInputs ? `<button class="btn-save" data-action="save-group-score" data-match="${m.id}">${done ? 'Salvar alteração' : 'Salvar placar'}</button>` : ''}
+    ${isAdmin && done && !editing ? `<div class="saved-row"><span class="saved-tag">✓ Salvo</span><button class="btn-edit" data-action="edit-score" data-match="${m.id}">Editar</button></div>` : ''}
   </div>`;
 }
 function renderEliminationView(catElim) {
@@ -654,6 +853,7 @@ function collectJogos(catKey) {
 function renderJogosView(catKey) {
   const items = collectJogos(catKey);
   if (!items.length) return `<div class="hint" style="margin-top:12px">Nenhum jogo gerado ainda.</div>`;
+  const semData = items.filter((i) => !i.data).length;
   const datasUnicas = [...new Set(items.filter((i) => i.data).map((i) => i.data))].sort();
   const filtered = jogosFiltroData === 'todas' ? items : items.filter((i) => i.data === jogosFiltroData);
   filtered.sort((x, y) => {
@@ -670,6 +870,19 @@ function renderJogosView(catKey) {
     g.items.push(it);
   });
   return `
+    ${isAdmin && semData > 0 ? `
+    <div class="card" style="margin-top:14px">
+      <div class="card-head-static">🕐 Gerar horários automaticamente (${semData} jogo${semData > 1 ? 's' : ''} sem data)</div>
+      <div class="card-body">
+        <div class="field"><label>Data dos jogos</label><input type="date" id="auto-data" /></div>
+        <div class="row2">
+          <div class="field"><label>Horário de início (1º jogo)</label><input type="time" id="auto-hora-inicio" /></div>
+          <div class="field"><label>Duração por jogo (min)</label><input type="number" min="1" id="auto-duracao" value="40" /></div>
+        </div>
+        <button class="btn-primary" data-action="gerar-horarios" data-cat="${esc(catKey)}">Gerar horários em sequência</button>
+        <div class="hint" style="text-align:left">Jogos da mesma rodada/fase recebem o mesmo horário (jogam ao mesmo tempo); a próxima rodada/fase começa depois da duração informada. Só preenche jogos que ainda não têm data.</div>
+      </div>
+    </div>` : ''}
     ${datasUnicas.length ? `<div class="tabs cat-tabs">
       <button class="tab ${jogosFiltroData === 'todas' ? 'active' : ''}" data-action="jogos-filtro-data" data-data="todas">Todas</button>
       ${datasUnicas.map((d) => `<button class="tab ${jogosFiltroData === d ? 'active' : ''}" data-action="jogos-filtro-data" data-data="${d}">${formatData(d)}</button>`).join('')}
@@ -719,6 +932,21 @@ function bindEvents() {
       else { document.getElementById('pin-modal-slot').innerHTML = renderPinModal(); bindPinModal(); }
     });
     if (action === 'toggle-setup') el.addEventListener('click', () => { setupOpen = !setupOpen; render(); });
+    if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; render(); });
+    if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; render(); });
+    if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; tab = 'jogos'; render(); });
+    if (action === 'voltar-lobby') el.addEventListener('click', () => selecionarTorneio(null));
+    if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
+    if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = el.dataset.id;
+      const novoValor = el.dataset.atual !== '1';
+      try { await set(ref(db, 'torneios/' + id + '/visivelPublico'), novoValor); } catch (err) { console.error(err); }
+    });
+    if (action === 'criar-torneio') el.addEventListener('click', () => {
+      const nome = document.getElementById('novo-torneio-nome').value.trim();
+      criarNovoTorneio(nome);
+    });
     if (action === 'set-tipo') el.addEventListener('click', () => setTipoHandler(el.dataset.tipo));
     if (action === 'toggle-inscricoes') el.addEventListener('click', () => persist({ ...state, inscricoesAbertas: !state.inscricoesAbertas }));
     if (action === 'toggle-visivel') el.addEventListener('click', () => persist({ ...state, visivelPublico: !state.visivelPublico }));
@@ -726,6 +954,7 @@ function bindEvents() {
     if (action === 'set-data-fim') el.addEventListener('change', () => persist({ ...state, dataFim: el.value }));
     if (action === 'sel-cat') el.addEventListener('click', () => { selectedCategoria = el.dataset.cat; tab = 'rodadas'; render(); });
     if (action === 'jogos-filtro-data') el.addEventListener('click', () => { jogosFiltroData = el.dataset.data; render(); });
+    if (action === 'gerar-horarios') el.addEventListener('click', () => gerarHorariosHandler(el.dataset.cat));
     if (action === 'add-cat') el.addEventListener('click', addCategoriaHandler);
     if (action === 'add-cat-sugg') el.addEventListener('click', () => addCategoria(el.dataset.cat));
     if (action === 'remove-cat') el.addEventListener('click', () => removeCategoriaHandler(el.dataset.cat));
@@ -761,6 +990,7 @@ function bindEvents() {
       });
     }
     if (action === 'save-score') el.addEventListener('click', () => saveScoreHandler(el.dataset.match));
+    if (action === 'edit-score') el.addEventListener('click', () => { editingMatches.add(el.dataset.match); render(); });
     if (action === 'save-group-score') el.addEventListener('click', () => saveGroupScoreHandler(el.dataset.match));
     if (action === 'save-bracket-score') el.addEventListener('click', () => saveBracketScoreHandler(el.dataset.match));
   });
@@ -924,6 +1154,29 @@ function gerarGruposHandler() {
   if (!novosGrupos.length) return;
   persist({ ...state, grupos: novosGrupos, eliminatorias: {} });
 }
+function gerarHorariosHandler(catKey) {
+  const dataInput = document.getElementById('auto-data').value;
+  const horaInput = document.getElementById('auto-hora-inicio').value;
+  const duracao = Number(document.getElementById('auto-duracao').value) || 40;
+  if (!dataInput || !horaInput) { alert('Preencha a data e o horário de início.'); return; }
+  const items = collectJogos(catKey).filter((it) => !it.data);
+  const faseOrder = [];
+  const byFase = {};
+  items.forEach((it) => {
+    if (!byFase[it.fase]) { byFase[it.fase] = []; faseOrder.push(it.fase); }
+    byFase[it.fase].push(it);
+  });
+  const [h, m] = horaInput.split(':').map(Number);
+  let cursorMin = h * 60 + m;
+  const agendamentos = { ...state.agendamentos };
+  faseOrder.forEach((fase) => {
+    const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+    byFase[fase].forEach((it) => { agendamentos[it.id] = { data: dataInput, hora: horaStr }; });
+    cursorMin += duracao;
+  });
+  persist({ ...state, agendamentos });
+}
+
 function gerarEliminatoriaSeNecessario(grupos, catKey, eliminatoriasAtuais) {
   const catGroups = grupos.filter((g) => g.categoria === catKey);
   const jaExiste = eliminatoriasAtuais[catKey] && eliminatoriasAtuais[catKey].length;
@@ -939,9 +1192,8 @@ function saveGroupScoreHandler(matchId) {
   const grupos = state.grupos.map((g) => ({ ...g, matches: g.matches.map((m) => m.id === matchId ? { ...m, scoreA: a, scoreB: b } : m) }));
   const scoredGroup = grupos.find((g) => g.matches.some((m) => m.id === matchId));
   const eliminatorias = scoredGroup ? gerarEliminatoriaSeNecessario(grupos, scoredGroup.categoria, state.eliminatorias) : state.eliminatorias;
+  editingMatches.delete(matchId);
   persist({ ...state, grupos, eliminatorias });
-  savedFlash = matchId; render();
-  setTimeout(() => { savedFlash = null; render(); }, 1500);
 }
 function gerarFinalHandler() {
   const catKey = currentCategoria();
@@ -958,9 +1210,8 @@ function saveScoreHandler(matchId) {
   Object.keys(newRounds).forEach((catKey) => {
     newRounds[catKey] = newRounds[catKey].map((rd) => ({ ...rd, matches: rd.matches.map((m) => m.id === matchId ? { ...m, scoreA: Number(d.a), scoreB: Number(d.b) } : m) }));
   });
+  editingMatches.delete(matchId);
   persist({ ...state, rounds: newRounds });
-  savedFlash = matchId; render();
-  setTimeout(() => { savedFlash = null; render(); }, 1500);
 }
 function saveBracketScoreHandler(matchId) {
   const d = drafts[matchId];
