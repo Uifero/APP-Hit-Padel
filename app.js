@@ -1,10 +1,13 @@
 import { firebaseConfig } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getDatabase, ref, onValue, set, get } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
+const auth = getAuth(app);
 const tRef = ref(db, 'tournament');
+const ADMIN_EMAIL_DOMAIN = '@hitpadel.local';
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const pairKey = (a, b) => [a, b].sort().join('~');
@@ -14,7 +17,6 @@ const CATEGORIA_SUGESTOES = ['Cat Iniciante', '7ª Cat', '6ª Cat', '5ª Cat', '
 function defaultState() {
   return {
     name: 'Hit Padel',
-    adminPin: '2026',
     tipo: 'americano', // 'americano' | 'mini' | 'chaves'
     categorias: [],
     players: [],
@@ -24,6 +26,12 @@ function defaultState() {
     rounds: {},        // { [categoria]: [ {round, byes, matches} ] }
     grupos: [],         // [ { id, nome, categoria, teamIds, matches } ]
     eliminatorias: {},  // { [categoria]: [ [match,...], [match,...] ] }
+    inscricoesAbertas: false,
+    visivelPublico: false,
+    dataInicio: '',
+    dataFim: '',
+    nomesQuadras: ['Quadra 01', 'Quadra 02'],
+    agendamentos: {},   // { [matchId]: { data, hora } }
   };
 }
 
@@ -235,12 +243,13 @@ function allGroupMatchesScored(groups) { return groups.every((g) => g.matches.ev
 
 // ---------- estado local / UI ----------
 let state = null;
-let isAdmin = localStorage.getItem('hitpadel_admin') === 'true';
+let isAdmin = false;
 let tab = 'rodadas';
 let setupOpen = true;
 let drafts = {};
 let savedFlash = null;
 let selectedCategoria = null;
+let jogosFiltroData = 'todas';
 let pubSignupFlash = null;
 
 const root = document.getElementById('root');
@@ -254,6 +263,10 @@ onValue(tRef, (snap) => {
   render();
 });
 get(tRef).then((snap) => { if (!snap.exists()) set(tRef, defaultState()); });
+onAuthStateChanged(auth, (user) => {
+  isAdmin = !!user;
+  render();
+});
 
 function nameOf(id) { return state.players.find((p) => p.id === id)?.name || '?'; }
 function teamNameOf(id) { return state.teams.find((t) => t.id === id)?.name || (id ? '?' : 'aguardando'); }
@@ -266,12 +279,24 @@ function currentCategoria() {
   return selectedCategoria;
 }
 
+function formatData(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}`;
+}
+function formatDataRange(state) {
+  if (!state.dataInicio && !state.dataFim) return '';
+  if (state.dataInicio && state.dataFim && state.dataInicio !== state.dataFim) return `📅 ${formatData(state.dataInicio)} a ${formatData(state.dataFim)}`;
+  return `📅 ${formatData(state.dataInicio || state.dataFim)}`;
+}
+
 function render() {
   if (!state) { root.innerHTML = '<div class="loading">Carregando quadra...</div>'; return; }
   const isChaves = state.tipo === 'chaves';
   const catKeys = categoriaKeys(state);
   const catKey = currentCategoria();
   const showSetup = isAdmin;
+  const dataRangeTxt = formatDataRange(state);
 
   const catPlayers = state.players.filter((p) => categoriaOf(p) === catKey);
   const catTeams = state.teams.filter((t) => categoriaOf(t) === catKey);
@@ -280,6 +305,7 @@ function render() {
   const catElim = state.eliminatorias[catKey] || [];
   const stats = computeStats(catPlayers, catRounds);
   const maxCourts = Math.max(1, Math.floor(catPlayers.length / 4)) || 1;
+  const ocultoDoPublico = !isAdmin && !state.visivelPublico;
 
   root.innerHTML = `
     <header class="hp-header">
@@ -288,7 +314,7 @@ function render() {
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
           <div>
             ${isAdmin ? `<input class="hp-name-input" data-action="rename" value="${esc(state.name)}" />` : `<div class="hp-name">${esc(state.name)}</div>`}
-            <div class="hp-live"><span class="dot"></span> ao vivo</div>
+            <div class="hp-live">${dataRangeTxt ? `<span>${esc(dataRangeTxt)}</span> · ` : ''}<span class="dot"></span> ao vivo</div>
           </div>
         </div>
         <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
@@ -296,9 +322,13 @@ function render() {
     </header>
     <main class="hp-main">
       ${showSetup ? renderSetup(maxCourts) : ''}
+      ${ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
       ${catKeys.length > 1 ? renderCategoriaTabs(catKeys, catKey) : ''}
       ${renderInscricaoPublica()}
-      ${isChaves ? renderGroupsAndElimination(catGroups, catElim, catTeams) : renderAmericanoView(catRounds, stats, catPlayers)}
+      ${!isAdmin ? renderInscritosPublico(catKey) : ''}
+      ${(catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
+      ${isChaves ? renderGroupsAndElimination(catGroups, catElim, catTeams, catKey) : renderAmericanoView(catRounds, stats, catPlayers, catKey)}
+      `}
     </main>
     <div id="pin-modal-slot"></div>
     <footer class="hp-footer">atualiza automaticamente</footer>
@@ -307,7 +337,7 @@ function render() {
 }
 
 function renderInscricaoPublica() {
-  if (isAdmin) return '';
+  if (isAdmin || !state.inscricoesAbertas) return '';
   const catKey = currentCategoria();
   const catLabelTxt = state.categorias.length ? ` — ${esc(catLabel(catKey) || 'Geral')}` : '';
   const flashMsg = pubSignupFlash ? `<div class="signup-ok">${esc(pubSignupFlash)}</div>` : '';
@@ -317,7 +347,8 @@ function renderInscricaoPublica() {
       <div class="card-body">
         <div class="field">
           <label>📝 Inscreva sua dupla${catLabelTxt}</label>
-          <div class="row"><input id="pub-team-name" placeholder="Ex: Ana & Bruna" /><button data-action="pub-add-team">Inscrever</button></div>
+          <input id="pub-team-name" placeholder="Ex: Ana & Bruna" style="margin-bottom:8px" />
+          <div class="row"><input id="pub-team-phone" type="tel" placeholder="Telefone (whatsapp)" /><button data-action="pub-add-team">Inscrever</button></div>
           ${flashMsg}
         </div>
       </div>
@@ -328,30 +359,50 @@ function renderInscricaoPublica() {
       <div class="card-body">
         <div class="field">
           <label>📝 Inscreva-se${catLabelTxt}</label>
-          <div class="row"><input id="pub-player-name" placeholder="Seu nome" /><button data-action="pub-add-player">Inscrever</button></div>
+          <input id="pub-player-name" placeholder="Seu nome" style="margin-bottom:8px" />
+          <div class="row"><input id="pub-player-phone" type="tel" placeholder="Telefone (whatsapp)" /><button data-action="pub-add-player">Inscrever</button></div>
           ${flashMsg}
         </div>
       </div>
     </section>`;
 }
 
+function renderInscritosPublico(catKey) {
+  const list = state.tipo === 'chaves' ? state.teams : state.players;
+  const catList = list.filter((x) => categoriaOf(x) === catKey && !x.oculto);
+  if (!catList.length) return '';
+  return `
+    <section class="card">
+      <div class="card-head-static">👥 Inscritas (${catList.length})</div>
+      <div class="card-body">
+        <div class="chips">
+          ${catList.map((x) => `<span class="chip">${esc(x.name)} ${x.confirmada ? '<span class="badge-ok">✓ confirmada</span>' : '<span class="badge-pending">⏳ pendente</span>'}</span>`).join('')}
+        </div>
+      </div>
+    </section>`;
+}
+function renderBuscaAtleta() {
+  return `<div class="field search-field"><input id="busca-atleta" placeholder="🔍 Buscar por atleta ou dupla..." /></div>`;
+}
 function renderCategoriaTabs(catKeys, current) {
   return `<div class="tabs cat-tabs">
     ${catKeys.map((k) => `<button class="tab ${k === current ? 'active' : ''}" data-action="sel-cat" data-cat="${esc(k)}">${esc(catLabel(k) || 'Geral')}</button>`).join('')}
   </div>`;
 }
 
-function renderAmericanoView(catRounds, stats, catPlayers) {
+function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
   if (!catRounds.length) return '';
   const podeGerarFinal = state.tipo === 'mini' && !catRounds.some((r) => r.isFinal) && catRounds.length > 0 && !roundsWithoutScores(catRounds) && catPlayers.length >= 4;
   return `
     <div class="tabs">
       <button class="tab ${tab === 'rodadas' ? 'active' : ''}" data-action="tab" data-tab="rodadas">Rodadas</button>
       <button class="tab ${tab === 'ranking' ? 'active' : ''}" data-action="tab" data-tab="ranking">Ranking</button>
+      <button class="tab ${tab === 'jogos' ? 'active' : ''}" data-action="tab" data-tab="jogos">Jogos</button>
     </div>
     ${isAdmin && podeGerarFinal ? `<button class="btn-primary" style="margin-bottom:14px" data-action="gerar-final">🏆 Gerar final (top 4)</button>` : ''}
     ${tab === 'rodadas' ? renderRounds(catRounds) : ''}
     ${tab === 'ranking' ? renderRanking(stats) : ''}
+    ${tab === 'jogos' ? renderJogosView(catKey) : ''}
   `;
 }
 
@@ -365,6 +416,20 @@ function renderSetup(maxCourts) {
     ${setupOpen ? `
     <div class="card-body">
       ${isAdmin ? `
+        <div class="field">
+          <label>Visibilidade pro público</label>
+          <button class="mode-btn ${state.visivelPublico ? 'active' : ''}" data-action="toggle-visivel">${state.visivelPublico ? '✓ Visível (torneio postado)' : 'Oculto'}</button>
+          <div class="hint" style="text-align:left;margin-top:4px">${state.visivelPublico ? 'Qualquer pessoa com o link já vê rodadas, chaves e ranking.' : 'Ninguém vê nada do torneio ainda (nem rodadas, nem inscritos). Ative quando quiser divulgar.'}</div>
+        </div>
+        <div class="row2">
+          <div class="field"><label>Data de início</label><input type="date" id="data-inicio" value="${esc(state.dataInicio)}" data-action="set-data-inicio" /></div>
+          <div class="field"><label>Data de término</label><input type="date" id="data-fim" value="${esc(state.dataFim)}" data-action="set-data-fim" /></div>
+        </div>
+        <div class="field">
+          <label>Inscrições públicas</label>
+          <button class="mode-btn ${state.inscricoesAbertas ? 'active' : ''}" data-action="toggle-inscricoes">${state.inscricoesAbertas ? '✓ Abertas (torneio postado)' : 'Fechadas'}</button>
+          <div class="hint" style="text-align:left;margin-top:4px">${state.inscricoesAbertas ? 'Qualquer pessoa com o link já pode se inscrever sozinha.' : 'Ninguém vê o formulário de inscrição ainda. Ative quando o torneio estiver pronto pra divulgar.'}</div>
+        </div>
         <div class="field">
           <label>Tipo de torneio</label>
           <div class="mode-row">
@@ -382,7 +447,7 @@ function renderSetup(maxCourts) {
         ${renderCategoriasSetup()}
         ${state.tipo === 'chaves' ? renderTeamsSetup() : renderPlayersSetup(maxCourts, minRounds)}
 
-        <div class="field"><label>PIN de admin</label><input id="admin-pin" value="${esc(state.adminPin)}" data-action="set-pin" /></div>
+        <div class="field"><label>Login de admin</label><div class="hint" style="text-align:left">Gerenciado no Firebase Authentication (não fica salvo aqui). Peça pro seu desenvolvedor pra trocar a senha lá se precisar.</div></div>
 
         ${state.tipo === 'chaves' ? `
           <button class="btn-primary" data-action="gerar-grupos">Gerar chaves</button>
@@ -415,7 +480,7 @@ function renderPlayersSetup(maxCourts, minRounds) {
     <div class="field">
       <label>Jogadoras (${state.players.length})</label>
       <div class="chips">
-        ${state.players.map((p) => `<span class="chip">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''} <button data-action="remove-player" data-id="${p.id}">×</button></span>`).join('')}
+        ${state.players.map((p) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} <button class="conf-badge ${p.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-player" data-id="${p.id}" title="${p.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${p.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}">×</button></span>`).join('')}
       </div>
       <div class="row">
         <input id="new-player" placeholder="Nome da jogadora" />
@@ -427,6 +492,12 @@ function renderPlayersSetup(maxCourts, minRounds) {
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
       <div class="field"><label>Rodadas</label><input type="number" min="1" max="30" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
     </div>
+    <div class="field">
+      <label>Nome das quadras</label>
+      <div class="row2">
+        ${Array.from({ length: state.numCourts }, (_, i) => `<input class="court-name-input" data-action="set-court-name" data-idx="${i}" value="${esc(state.nomesQuadras[i] || `Quadra ${String(i + 1).padStart(2, '0')}`)}" />`).join('')}
+      </div>
+    </div>
     ${minRounds > 0 ? `<div class="hint" style="text-align:left">Com ${state.players.filter((p) => categoriaOf(p) === currentCategoria()).length} jogadoras (categoria atual) e ${Math.min(state.numCourts, maxCourts)} quadra(s), seriam necessárias <b>~${minRounds} rodadas</b> pra cobertura total.</div>` : ''}
   `;
 }
@@ -437,7 +508,7 @@ function renderTeamsSetup() {
     <div class="field">
       <label>Duplas (${state.teams.length})</label>
       <div class="chips">
-        ${state.teams.map((t) => `<span class="chip">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''} <button data-action="remove-team" data-id="${t.id}">×</button></span>`).join('')}
+        ${state.teams.map((t) => `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${t.telefone ? ` <span class="tel">📞${esc(t.telefone)}</span>` : ''} <button class="conf-badge ${t.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-team" data-id="${t.id}" title="${t.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${t.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}">×</button></span>`).join('')}
       </div>
       <div class="row">
         <input id="new-team" placeholder="Ex: Ana & Bruna" />
@@ -456,12 +527,15 @@ function renderRounds(catRounds) {
       </div>`).join('')}
   </div>`;
 }
+function quadraNome(state, courtNum) {
+  return state.nomesQuadras[courtNum - 1] || `Quadra ${String(courtNum).padStart(2, '0')}`;
+}
 function renderMatch(m, ri) {
   const d = drafts[m.id] || { a: m.scoreA ?? '', b: m.scoreB ?? '' };
   const done = m.scoreA != null && m.scoreB != null;
   return `
   <div class="match">
-    <div class="match-head"><span class="court-tag">QUADRA ${m.court}</span>${done ? '<span class="check">✓</span>' : ''}</div>
+    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${done ? '<span class="check">✓</span>' : ''}</div>
     <div class="team-row">
       <span class="team-name">${m.teamA.map(nameOf).map(esc).join(' + ')}</span>
       ${isAdmin ? `<input type="number" min="0" class="score-input" data-action="score-a" data-match="${m.id}" value="${d.a}" />` : `<span class="score">${m.scoreA ?? '–'}</span>`}
@@ -476,19 +550,28 @@ function renderMatch(m, ri) {
 }
 function renderRanking(stats) {
   if (!stats.length) return `<div class="card-body hint">Nenhum resultado lançado ainda.</div>`;
-  return `<table class="ranking"><thead><tr><th>#</th><th>Jogadora</th><th>J</th><th>V</th><th>SG</th><th>Pts</th></tr></thead><tbody>
-    ${stats.map((s, i) => `<tr><td class="${i < 3 ? 'top' : ''}">${i + 1}</td><td>${esc(s.name)}</td><td class="c">${s.partidas}</td><td class="c">${s.vitorias}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td><td class="pts">${s.pontos}</td></tr>`).join('')}
+  return `<table class="ranking"><thead><tr><th>#</th><th>Jogadora</th><th>J</th><th>V</th><th>SS</th><th>SG</th><th>Pts</th></tr></thead><tbody>
+    ${stats.map((s, i) => {
+      const ss = s.vitorias - s.derrotas;
+      return `<tr><td class="${i < 3 ? 'top' : ''}">${i + 1}</td><td>${esc(s.name)}</td><td class="c">${s.partidas}</td><td class="c">${s.vitorias}</td><td class="c">${ss > 0 ? '+' + ss : ss}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td><td class="pts">${s.pontos}</td></tr>`;
+    }).join('')}
   </tbody></table>`;
 }
 
 // ---------- grupos + eliminatória (Chaves) ----------
-function renderGroupsAndElimination(catGroups, catElim, catTeams) {
+function renderGroupsAndElimination(catGroups, catElim, catTeams, catKey) {
   if (!catGroups.length) return '';
   return `
+    <div class="tabs">
+      <button class="tab ${tab === 'rodadas' ? 'active' : ''}" data-action="tab" data-tab="rodadas">Chaveamento</button>
+      <button class="tab ${tab === 'jogos' ? 'active' : ''}" data-action="tab" data-tab="jogos">Jogos</button>
+    </div>
+    ${tab === 'jogos' ? renderJogosView(catKey) : `
     <div class="groups-wrap">
       ${catGroups.map((g) => renderGroupCard(g)).join('')}
     </div>
     ${catElim.length ? renderEliminationView(catElim) : (allGroupMatchesScored(catGroups) ? '' : `<div class="hint" style="margin-top:12px">A eliminatória é gerada automaticamente assim que todos os placares das chaves forem lançados.</div>`)}
+    `}
   `;
 }
 function renderGroupCard(g) {
@@ -497,8 +580,11 @@ function renderGroupCard(g) {
   <div class="round-block">
     <div class="round-title"><span>${esc(g.nome)}</span></div>
     <table class="ranking" style="margin-bottom:10px">
-      <thead><tr><th>#</th><th>Dupla</th><th>V</th><th>D</th><th>Saldo</th></tr></thead>
-      <tbody>${standings.map((s, i) => `<tr><td class="${i < 2 ? 'top' : ''}">${i + 1}</td><td>${esc(teamNameOf(s.id))}</td><td class="c">${s.vitorias}</td><td class="c">${s.derrotas}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>#</th><th>Dupla</th><th>V</th><th>Saldo Sets</th><th>Saldo Games</th></tr></thead>
+      <tbody>${standings.map((s, i) => {
+        const ss = s.vitorias - s.derrotas;
+        return `<tr><td class="${i < 2 ? 'top' : ''}">${i + 1}</td><td>${esc(teamNameOf(s.id))}</td><td class="c">${s.vitorias}</td><td class="c">${ss > 0 ? '+' + ss : ss}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td></tr>`;
+      }).join('')}</tbody>
     </table>
     <div class="matches">${g.matches.map((m) => renderGroupMatch(m)).join('')}</div>
   </div>`;
@@ -540,13 +626,85 @@ function renderBracketMatch(m) {
   </div>`;
 }
 
+function collectJogos(catKey) {
+  const items = [];
+  if (state.tipo === 'chaves') {
+    state.grupos.filter((g) => g.categoria === catKey).forEach((g) => {
+      g.matches.forEach((m) => items.push({ id: m.id, fase: g.nome, a: teamNameOf(m.teamA), b: teamNameOf(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB }));
+    });
+    (state.eliminatorias[catKey] || []).forEach((rd) => {
+      rd.forEach((m) => {
+        if (m.isBye) return;
+        items.push({ id: m.id, fase: roundName(rd.length), a: teamNameOf(m.teamA), b: teamNameOf(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB });
+      });
+    });
+  } else {
+    (state.rounds[catKey] || []).forEach((rd) => {
+      rd.matches.forEach((m) => items.push({ id: m.id, fase: rd.isFinal ? 'Final' : `Rodada ${rd.round}`, a: m.teamA.map(nameOf).join(' + '), b: m.teamB.map(nameOf).join(' + '), scoreA: m.scoreA, scoreB: m.scoreB, court: m.court }));
+    });
+  }
+  return items.map((it) => {
+    const ag = state.agendamentos[it.id] || {};
+    return { ...it, data: ag.data || '', hora: ag.hora || '' };
+  });
+}
+
+function renderJogosView(catKey) {
+  const items = collectJogos(catKey);
+  if (!items.length) return `<div class="hint" style="margin-top:12px">Nenhum jogo gerado ainda.</div>`;
+  const datasUnicas = [...new Set(items.filter((i) => i.data).map((i) => i.data))].sort();
+  const filtered = jogosFiltroData === 'todas' ? items : items.filter((i) => i.data === jogosFiltroData);
+  filtered.sort((x, y) => {
+    const dx = x.data || '9999-99-99', dy = y.data || '9999-99-99';
+    if (dx !== dy) return dx < dy ? -1 : 1;
+    const hx = x.hora || '99:99', hy = y.hora || '99:99';
+    return hx < hy ? -1 : hx > hy ? 1 : 0;
+  });
+  const grupos = [];
+  filtered.forEach((it) => {
+    const key = it.data || 'sem-data';
+    let g = grupos.find((x) => x.key === key);
+    if (!g) { g = { key, data: it.data, items: [] }; grupos.push(g); }
+    g.items.push(it);
+  });
+  return `
+    ${datasUnicas.length ? `<div class="tabs cat-tabs">
+      <button class="tab ${jogosFiltroData === 'todas' ? 'active' : ''}" data-action="jogos-filtro-data" data-data="todas">Todas</button>
+      ${datasUnicas.map((d) => `<button class="tab ${jogosFiltroData === d ? 'active' : ''}" data-action="jogos-filtro-data" data-data="${d}">${formatData(d)}</button>`).join('')}
+    </div>` : ''}
+    <div class="rounds">
+      ${grupos.map((g) => `
+        <div class="round-block">
+          <div class="round-title"><span>${g.data ? formatData(g.data) : 'Sem data definida'}</span></div>
+          <div class="matches">${g.items.map((it) => renderJogoItem(it)).join('')}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+function renderJogoItem(it) {
+  return `
+  <div class="match">
+    <div class="match-head"><span class="court-tag">${esc(it.fase)}</span>${it.hora ? `<span class="jogo-hora">🕐 ${esc(it.hora)}</span>` : ''}</div>
+    <div class="team-row"><span class="team-name">${esc(it.a)}</span><span class="score">${it.scoreA ?? '–'}</span></div>
+    <div class="vs">×</div>
+    <div class="team-row"><span class="team-name">${esc(it.b)}</span><span class="score">${it.scoreB ?? '–'}</span></div>
+    ${isAdmin ? `
+      <div class="row" style="margin-top:8px">
+        <input type="date" class="agendamento-data" data-match="${it.id}" value="${esc(it.data)}" />
+        <input type="time" class="agendamento-hora" data-match="${it.id}" value="${esc(it.hora)}" />
+      </div>
+    ` : ''}
+  </div>`;
+}
+
 function renderPinModal() {
   return `<div class="modal-bg" data-action="close-pin-bg"><div class="modal" data-action="stop-bubble">
     <div class="modal-title">Entrar como admin</div>
-    <input id="pin-input" type="password" placeholder="PIN" autofocus />
+    <input id="login-user" placeholder="Usuário" autofocus style="margin-bottom:8px" />
+    <input id="login-pass" type="password" placeholder="Senha" />
     <div id="pin-error" class="pin-error"></div>
     <div class="modal-actions"><button data-action="close-pin">Cancelar</button><button class="btn-primary" data-action="try-unlock">Entrar</button></div>
-    <div class="hint" style="margin-top:8px">PIN padrão: 2026 (troque em Configuração)</div>
   </div></div>`;
 }
 
@@ -555,24 +713,39 @@ function bindEvents() {
     const action = el.dataset.action;
     if (action === 'rename') el.addEventListener('change', () => persist({ ...state, name: el.value }));
     if (action === 'toggle-admin') el.addEventListener('click', () => {
-      if (isAdmin) { isAdmin = false; localStorage.removeItem('hitpadel_admin'); render(); }
+      if (isAdmin) { signOut(auth); }
       else { document.getElementById('pin-modal-slot').innerHTML = renderPinModal(); bindPinModal(); }
     });
     if (action === 'toggle-setup') el.addEventListener('click', () => { setupOpen = !setupOpen; render(); });
     if (action === 'set-tipo') el.addEventListener('click', () => setTipoHandler(el.dataset.tipo));
+    if (action === 'toggle-inscricoes') el.addEventListener('click', () => persist({ ...state, inscricoesAbertas: !state.inscricoesAbertas }));
+    if (action === 'toggle-visivel') el.addEventListener('click', () => persist({ ...state, visivelPublico: !state.visivelPublico }));
+    if (action === 'set-data-inicio') el.addEventListener('change', () => persist({ ...state, dataInicio: el.value }));
+    if (action === 'set-data-fim') el.addEventListener('change', () => persist({ ...state, dataFim: el.value }));
     if (action === 'sel-cat') el.addEventListener('click', () => { selectedCategoria = el.dataset.cat; tab = 'rodadas'; render(); });
+    if (action === 'jogos-filtro-data') el.addEventListener('click', () => { jogosFiltroData = el.dataset.data; render(); });
     if (action === 'add-cat') el.addEventListener('click', addCategoriaHandler);
     if (action === 'add-cat-sugg') el.addEventListener('click', () => addCategoria(el.dataset.cat));
     if (action === 'remove-cat') el.addEventListener('click', () => removeCategoriaHandler(el.dataset.cat));
     if (action === 'remove-player') el.addEventListener('click', () => persist({ ...state, players: state.players.filter((p) => p.id !== el.dataset.id) }));
+    if (action === 'toggle-confirm-player') el.addEventListener('click', () => toggleConfirmHandler('players', el.dataset.id));
+    if (action === 'toggle-confirm-team') el.addEventListener('click', () => toggleConfirmHandler('teams', el.dataset.id));
+    if (action === 'toggle-oculto-player') el.addEventListener('click', () => toggleOcultoHandler('players', el.dataset.id));
+    if (action === 'toggle-oculto-team') el.addEventListener('click', () => toggleOcultoHandler('teams', el.dataset.id));
     if (action === 'add-player') el.addEventListener('click', addPlayerHandler);
     if (action === 'remove-team') el.addEventListener('click', () => persist({ ...state, teams: state.teams.filter((t) => t.id !== el.dataset.id) }));
     if (action === 'add-team') el.addEventListener('click', addTeamHandler);
     if (action === 'pub-add-player') el.addEventListener('click', pubAddPlayerHandler);
     if (action === 'pub-add-team') el.addEventListener('click', pubAddTeamHandler);
     if (action === 'set-courts') el.addEventListener('change', () => persist({ ...state, numCourts: Math.max(1, Number(el.value) || 1) }));
+    if (action === 'set-court-name') el.addEventListener('change', () => {
+      const idx = Number(el.dataset.idx);
+      const nomes = [...state.nomesQuadras];
+      while (nomes.length <= idx) nomes.push(`Quadra ${String(nomes.length + 1).padStart(2, '0')}`);
+      nomes[idx] = el.value || `Quadra ${String(idx + 1).padStart(2, '0')}`;
+      persist({ ...state, nomesQuadras: nomes });
+    });
     if (action === 'set-rounds') el.addEventListener('change', () => persist({ ...state, numRounds: Math.max(1, Math.min(30, Number(el.value) || 1)) }));
-    if (action === 'set-pin') el.addEventListener('change', () => persist({ ...state, adminPin: el.value }));
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
     if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
@@ -589,14 +762,39 @@ function bindEvents() {
     if (action === 'save-group-score') el.addEventListener('click', () => saveGroupScoreHandler(el.dataset.match));
     if (action === 'save-bracket-score') el.addEventListener('click', () => saveBracketScoreHandler(el.dataset.match));
   });
+  document.querySelectorAll('.agendamento-data, .agendamento-hora').forEach((el) => {
+    el.addEventListener('change', () => {
+      const matchId = el.dataset.match;
+      const atual = state.agendamentos[matchId] || { data: '', hora: '' };
+      const campo = el.classList.contains('agendamento-data') ? 'data' : 'hora';
+      persist({ ...state, agendamentos: { ...state.agendamentos, [matchId]: { ...atual, [campo]: el.value } } });
+    });
+  });
   const newPlayerInput = document.getElementById('new-player');
   if (newPlayerInput) newPlayerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addPlayerHandler(); });
   const newTeamInput = document.getElementById('new-team');
   if (newTeamInput) newTeamInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addTeamHandler(); });
   const pubPlayerInput = document.getElementById('pub-player-name');
   if (pubPlayerInput) pubPlayerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddPlayerHandler(); });
+  const pubPlayerPhone = document.getElementById('pub-player-phone');
+  if (pubPlayerPhone) pubPlayerPhone.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddPlayerHandler(); });
   const pubTeamInput = document.getElementById('pub-team-name');
   if (pubTeamInput) pubTeamInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
+  const pubTeamPhone = document.getElementById('pub-team-phone');
+  if (pubTeamPhone) pubTeamPhone.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
+  const buscaInput = document.getElementById('busca-atleta');
+  if (buscaInput) buscaInput.addEventListener('input', () => {
+    const termo = buscaInput.value.trim().toLowerCase();
+    document.querySelectorAll('.round-block').forEach((block) => {
+      let algumVisivel = false;
+      block.querySelectorAll('.match').forEach((m) => {
+        const show = !termo || m.textContent.toLowerCase().includes(termo);
+        m.style.display = show ? '' : 'none';
+        if (show) algumVisivel = true;
+      });
+      block.style.display = algumVisivel ? '' : 'none';
+    });
+  });
   const newCatInput = document.getElementById('new-cat');
   if (newCatInput) newCatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCategoriaHandler(); });
 }
@@ -606,13 +804,23 @@ function bindPinModal() {
   document.querySelector('[data-action="stop-bubble"]')?.addEventListener('click', (e) => e.stopPropagation());
   document.querySelector('[data-action="close-pin"]')?.addEventListener('click', closePinModal);
   document.querySelector('[data-action="try-unlock"]')?.addEventListener('click', tryUnlock);
-  document.getElementById('pin-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
+  document.getElementById('login-user')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
+  document.getElementById('login-pass')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
 }
 function closePinModal() { document.getElementById('pin-modal-slot').innerHTML = ''; }
-function tryUnlock() {
-  const val = document.getElementById('pin-input').value;
-  if (val === state.adminPin) { isAdmin = true; localStorage.setItem('hitpadel_admin', 'true'); closePinModal(); render(); }
-  else document.getElementById('pin-error').textContent = 'PIN incorreto';
+async function tryUnlock() {
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  const btn = document.querySelector('[data-action="try-unlock"]');
+  if (btn) btn.textContent = 'Entrando...';
+  try {
+    await signInWithEmailAndPassword(auth, user.toLowerCase() + ADMIN_EMAIL_DOMAIN, pass);
+    closePinModal();
+  } catch (e) {
+    const err = document.getElementById('pin-error');
+    if (err) err.textContent = 'Usuário ou senha incorretos';
+    if (btn) btn.textContent = 'Entrar';
+  }
 }
 
 function setTipoHandler(tipo) {
@@ -640,7 +848,7 @@ function addPlayerHandler() {
   if (!name) return;
   const catSelect = document.getElementById('new-player-cat');
   const categoria = catSelect ? catSelect.value : '';
-  persist({ ...state, players: [...state.players, { id: uid(), name, categoria }] });
+  persist({ ...state, players: [...state.players, { id: uid(), name, categoria, confirmada: true, oculto: false }] });
 }
 function addTeamHandler() {
   const input = document.getElementById('new-team');
@@ -648,31 +856,43 @@ function addTeamHandler() {
   if (!name) return;
   const catSelect = document.getElementById('new-team-cat');
   const categoria = catSelect ? catSelect.value : '';
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, categoria }] });
+  persist({ ...state, teams: [...state.teams, { id: uid(), name, categoria, confirmada: true, oculto: false }] });
 }
 function pubAddPlayerHandler() {
-  const input = document.getElementById('pub-player-name');
-  const name = input.value.trim();
-  if (!name) return;
+  const nameInput = document.getElementById('pub-player-name');
+  const phoneInput = document.getElementById('pub-player-phone');
+  const name = nameInput.value.trim();
+  const telefone = phoneInput.value.trim();
+  if (!name || !telefone) { alert('Preencha nome e telefone pra se inscrever.'); return; }
   const catKey = currentCategoria();
   const categoria = catKey === DEFAULT_CAT ? '' : catKey;
-  persist({ ...state, players: [...state.players, { id: uid(), name, categoria }] });
-  input.value = '';
-  pubSignupFlash = `"${name}" inscrita(o) ✓`;
+  persist({ ...state, players: [...state.players, { id: uid(), name, telefone, categoria, confirmada: false, oculto: false }] });
+  nameInput.value = ''; phoneInput.value = '';
+  pubSignupFlash = `"${name}" inscrita(o) ✓ (aguardando confirmação do organizador)`;
   render();
-  setTimeout(() => { pubSignupFlash = null; render(); }, 2500);
+  setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
 }
 function pubAddTeamHandler() {
-  const input = document.getElementById('pub-team-name');
-  const name = input.value.trim();
-  if (!name) return;
+  const nameInput = document.getElementById('pub-team-name');
+  const phoneInput = document.getElementById('pub-team-phone');
+  const name = nameInput.value.trim();
+  const telefone = phoneInput.value.trim();
+  if (!name || !telefone) { alert('Preencha o nome da dupla e o telefone pra se inscrever.'); return; }
   const catKey = currentCategoria();
   const categoria = catKey === DEFAULT_CAT ? '' : catKey;
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, categoria }] });
-  input.value = '';
-  pubSignupFlash = `"${name}" inscrita ✓`;
+  persist({ ...state, teams: [...state.teams, { id: uid(), name, telefone, categoria, confirmada: false, oculto: false }] });
+  nameInput.value = ''; phoneInput.value = '';
+  pubSignupFlash = `"${name}" inscrita ✓ (aguardando confirmação do organizador)`;
   render();
-  setTimeout(() => { pubSignupFlash = null; render(); }, 2500);
+  setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
+}
+function toggleConfirmHandler(list, id) {
+  const key = list === 'players' ? 'players' : 'teams';
+  persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, confirmada: !x.confirmada } : x) });
+}
+function toggleOcultoHandler(list, id) {
+  const key = list === 'players' ? 'players' : 'teams';
+  persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, oculto: !x.oculto } : x) });
 }
 function sortearHandler() {
   const newRounds = { ...state.rounds };
