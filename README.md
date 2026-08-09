@@ -1,43 +1,51 @@
-# Hit Padel — deploy no Firebase
+# Hit Padel — guia do projeto (app-hit-padel)
 
-## 1. Criar o projeto Firebase (grátis)
-1. Acesse https://console.firebase.google.com e clique em **Adicionar projeto**.
-2. Dê um nome (ex: `hit-padel`) e conclua a criação.
-3. No menu lateral, vá em **Compilação > Realtime Database** → **Criar banco de dados** → escolha uma região (ex: `us-central1`) → inicie em **modo de teste**.
-4. Vá em **Configurações do projeto** (ícone de engrenagem) → aba **Geral** → role até "Seus apps" → clique no ícone **</>** (Web) → registre um app (ex: `hit-padel-web`) → **não** marque Firebase Hosting nessa tela.
-5. Copie o objeto `firebaseConfig` que aparece e cole no arquivo `firebase-config.js` deste projeto, substituindo os campos `COLE_AQUI`.
+Projeto Firebase: **app-hit-padel**
+Repositório GitHub (deploy automático): **github.com/Uifero/APP-Hit-Padel**
+Login de admin: **Uifero** / **Uifero.,26** (conta criada no Firebase Authentication)
 
-## 2. Instalar as ferramentas (uma vez só)
-No computador, com Node.js instalado:
-```
-npm install -g firebase-tools
-firebase login
-```
+## Como o site funciona agora (múltiplos torneios)
+- **`https://app-hit-padel.web.app`** (sem nada depois) → mostra a lista de torneios:
+  - Pra você (admin, logado): **"Meus torneios"** — todos os que você criou, publicados ou não, com botão de criar um novo.
+  - Pro público (sem login): **"Torneios em andamento"** — só os que você marcou como publicados.
+- **`https://app-hit-padel.web.app?t=<id>`** → abre um torneio específico direto. Esse é o link que você compartilha pra cada torneio (aparece sozinho na barra de endereço quando você abre um torneio, é só copiar dali).
+- Você pode ter vários torneios rodando ao mesmo tempo, cada um com seus próprios dados, categorias, inscrições etc. — totalmente independentes.
 
-## 3. Publicar o site
-Dentro da pasta `hitpadel-site`:
-```
-firebase init hosting
-```
-- Escolha **Use an existing project** → selecione o projeto que você criou.
-- Pergunta "What do you want to use as your public directory?" → responda `.` (ponto).
-- "Configure as a single-page app?" → **No**.
-- "Set up automatic builds with GitHub?" → **No**.
-- Se perguntar se quer sobrescrever `index.html`, responda **No** (para manter o seu).
+## Painel de gestão (dentro de cada torneio, como admin)
+Ao entrar num torneio como admin, aparece um painel com 6 módulos:
+- **Configurações** — tipo de torneio, categorias, datas, visibilidade, inscrições abertas/fechadas
+- **Quadras e Rodadas** — quantidade e nome das quadras, número de rodadas
+- **Inscrições** — cadastrar/remover/confirmar/ocultar jogadoras ou duplas
+- **Duplas** — lista das confirmadas (visão rápida)
+- **Chaveamento** — botão de sortear rodadas / gerar chaves
+- **Jogos** — atalho pra ver e agendar horários (mesma aba "Jogos" que já existia)
 
-Depois publique:
-```
-firebase deploy
-```
-Ao final ele mostra o link público, algo como `https://hit-padel.web.app` — é esse link que você compartilha com o pessoal.
+## Status atual
+- [x] Projeto Firebase criado
+- [x] Realtime Database ativado
+- [x] Firebase Authentication ativado (login real)
+- [x] `firebase-config.js` preenchido com as chaves reais
+- [x] Deploy automático via GitHub Actions configurado
+- [x] Estrutura de múltiplos torneios implementada
 
-## 4. Colocar domínio próprio (ex: hitpadel.com.br)
-No Firebase Console → **Hosting** → **Adicionar domínio personalizado** → siga as instruções para apontar o DNS do seu domínio (registros A/TXT). É grátis e o Firebase cuida do certificado SSL automaticamente.
+## Arquivos desta pasta
+| Arquivo | Para que serve |
+|---|---|
+| `index.html` | A página do app |
+| `app.js` | Toda a lógica (múltiplos torneios, Americano, Mini torneio, Chaves, painel de gestão) |
+| `logo.png` | Logo do Hit Padel Tuparendi |
+| `firebase-config.js` | Chaves do projeto (já preenchido) |
+| `firebase.json` | Configuração de hospedagem |
+| `database.rules.json` | Regras do banco (`torneios/` — cada torneio isolado) |
 
-## 5. Atualizar o app no futuro
-Sempre que eu (Claude) mandar arquivos novos, é só substituir na pasta e rodar `firebase deploy` de novo.
+## Atualizar o site
+Como o deploy é automático: abre o arquivo no GitHub (`github.com/Uifero/APP-Hit-Padel`) → lápis (editar) → cola o conteúdo novo → "Commit changes". Em ~1 minuto o site atualiza sozinho. Confirma em `github.com/Uifero/APP-Hit-Padel/actions` se quiser ver o progresso.
 
-## Sobre segurança do PIN de admin
-Por enquanto o PIN de admin só bloqueia a *interface* — as regras do banco (`database.rules.json`) estão abertas para leitura/escrita para manter o MVP simples. Isso é suficiente para um torneio entre amigos/clube, mas tecnicamente alguém muito curioso poderia editar os dados direto pelo console do navegador. Se um dia quiser travar isso de verdade, dá para adicionar Firebase Authentication — me avisa quando quiser esse reforço.Teste de deploy automático.
+## Migração automática
+Se você tinha um torneio antigo (do formato de "um torneio só"), ele é migrado sozinho pro novo formato na primeira vez que o site carrega — vira o primeiro item da sua lista "Meus torneios", com todos os dados preservados.
 
-  
+## Domínio próprio (ex: hitpadel.com.br) — opcional
+Firebase Console → **Hosting** → **Adicionar domínio personalizado** → seguir as instruções de DNS. Grátis, com SSL automático.
+
+## Sobre segurança
+O login de admin usa Firebase Authentication de verdade (a senha nunca fica salva em texto no banco de dados). As regras do banco (`torneios/`) continuam abertas pra leitura/escrita — suficiente pra um torneio de amigos/clube, mas tecnicamente alguém muito técnico ainda poderia editar dados sem passar pela tela do site. Travar isso por completo exigiria uma reestruturação maior (Cloud Functions) — avisa se um dia quiser esse reforço.
