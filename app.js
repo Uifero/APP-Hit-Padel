@@ -283,6 +283,57 @@ function selecionarTorneio(id) {
   render();
 }
 
+function notifKey(tid) { return `hitpadel_notif_seen_${tid}`; }
+function notifAtivadoKey(tid) { return `hitpadel_notif_on_${tid}`; }
+function notificacoesAtivas() {
+  return !!(currentTournamentId && localStorage.getItem(notifAtivadoKey(currentTournamentId)) === '1');
+}
+function verificarNovasInscricoes(novoState) {
+  if (!isAdmin || !currentTournamentId) return;
+  if (typeof Notification === 'undefined') return;
+  if (!notificacoesAtivas()) return;
+  if (Notification.permission !== 'granted') return;
+  const key = notifKey(currentTournamentId);
+  const initKey = key + '_init';
+  let seen;
+  try { seen = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) { seen = []; }
+  const seenSet = new Set(seen);
+  const entradas = [...(novoState.players || []), ...(novoState.teams || [])];
+  if (localStorage.getItem(initKey) !== '1') {
+    entradas.forEach((e) => seenSet.add(e.id));
+    localStorage.setItem(key, JSON.stringify([...seenSet]));
+    localStorage.setItem(initKey, '1');
+    return;
+  }
+  const novas = entradas.filter((e) => !seenSet.has(e.id));
+  entradas.forEach((e) => seenSet.add(e.id));
+  localStorage.setItem(key, JSON.stringify([...seenSet]));
+  novas.forEach((e) => {
+    try { new Notification('Nova inscrição — ' + (novoState.name || 'Hit Padel'), { body: e.name, icon: './logo.png' }); } catch (err) { console.error(err); }
+  });
+}
+
+async function toggleNotificacoesHandler() {
+  if (!currentTournamentId) return;
+  if (typeof Notification === 'undefined') { alert('Seu navegador não suporta notificações.'); return; }
+  if (notificacoesAtivas()) {
+    localStorage.setItem(notifAtivadoKey(currentTournamentId), '0');
+    render();
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    localStorage.setItem(notifAtivadoKey(currentTournamentId), '1');
+    const key = notifKey(currentTournamentId);
+    const entradas = [...(state.players || []), ...(state.teams || [])];
+    localStorage.setItem(key, JSON.stringify(entradas.map((e) => e.id)));
+    localStorage.setItem(key + '_init', '1');
+  } else {
+    alert('Permissão de notificação negada. Ative nas configurações do navegador se quiser usar esse recurso.');
+  }
+  render();
+}
+
 function carregarTorneioAtual() {
   if (unsubscribeTournament) { unsubscribeTournament(); unsubscribeTournament = null; }
   if (!currentTournamentId) { state = null; return; }
@@ -290,6 +341,7 @@ function carregarTorneioAtual() {
   unsubscribeTournament = onValue(r, (snap) => {
     if (snap.exists()) { state = { ...defaultState(), ...snap.val() }; }
     else { state = defaultState(); set(r, state); }
+    verificarNovasInscricoes(state);
     render();
   });
 }
@@ -474,8 +526,14 @@ function renderInscricaoPublica() {
       <div class="card-body">
         <div class="field">
           <label>📝 Inscreva sua dupla${catLabelTxt}</label>
-          <input id="pub-team-name" placeholder="Ex: Ana & Bruna" style="margin-bottom:8px" />
-          <div class="row"><input id="pub-team-phone" type="tel" placeholder="Telefone (whatsapp)" /><button data-action="pub-add-team">Inscrever</button></div>
+          <input id="pub-team-j1" placeholder="Seu nome" style="margin-bottom:8px" />
+          <input id="pub-team-tel1" type="tel" placeholder="Seu telefone (whatsapp)" style="margin-bottom:8px" />
+          <label class="checkbox-row"><input type="checkbox" id="pub-team-sem-parceiro" data-action="toggle-sem-parceiro-pub" /> Estou sem parceiro(a) — procurando dupla</label>
+          <div id="pub-team-parceiro-wrap">
+            <input id="pub-team-j2" placeholder="Nome do(a) parceiro(a)" style="margin-bottom:8px" />
+            <input id="pub-team-tel2" type="tel" placeholder="Telefone do(a) parceiro(a) (opcional)" style="margin-bottom:8px" />
+          </div>
+          <button data-action="pub-add-team" style="width:100%">Inscrever</button>
           ${flashMsg}
         </div>
       </div>
@@ -599,6 +657,11 @@ function renderConfigModulo() {
       <button class="mode-btn ${state.visivelPublico ? 'active' : ''}" data-action="toggle-visivel">${state.visivelPublico ? '✓ Visível (torneio postado)' : 'Oculto'}</button>
       <div class="hint" style="text-align:left;margin-top:4px">${state.visivelPublico ? 'Qualquer pessoa com o link já vê rodadas, chaves e ranking.' : 'Ninguém vê nada do torneio ainda. Ative quando quiser divulgar.'}</div>
     </div>
+    <div class="field">
+      <label>Notificações de inscrição</label>
+      <button class="mode-btn ${notificacoesAtivas() ? 'active' : ''}" data-action="toggle-notificacoes">${notificacoesAtivas() ? '✓ Ativadas' : 'Ativar notificações'}</button>
+      <div class="hint" style="text-align:left;margin-top:4px">Mostra um aviso no navegador quando alguém se inscrever, enquanto esta aba estiver aberta.</div>
+    </div>
     <div class="row2">
       <div class="field"><label>Data de início</label><input type="date" id="data-inicio" value="${esc(state.dataInicio)}" data-action="set-data-inicio" /></div>
       <div class="field"><label>Data de término</label><input type="date" id="data-fim" value="${esc(state.dataFim)}" data-action="set-data-fim" /></div>
@@ -694,18 +757,35 @@ function renderPlayersSetup(minRounds) {
   `;
 }
 
+function montarNomeDupla(j1, j2, semParceiro) {
+  if (semParceiro || !j2) return `${j1} (sem parceiro)`;
+  return `${j1} & ${j2}`;
+}
+
 function renderTeamsSetup() {
   const showCatSelect = state.categorias.length > 0;
   return `
     <div class="field">
       <label>Duplas (${state.teams.length})</label>
       <div class="chips">
-        ${state.teams.map((t) => `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${t.telefone ? ` <span class="tel">📞${esc(t.telefone)}</span>` : ''} <button class="conf-badge ${t.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-team" data-id="${t.id}" title="${t.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${t.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}">×</button></span>`).join('')}
+        ${state.teams.map((t) => {
+          const tel1 = t.telefone1 || t.telefone || '';
+          const tel2 = t.telefone2 || '';
+          return `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''} <button class="conf-badge ${t.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-team" data-id="${t.id}" title="${t.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${t.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}">×</button></span>`;
+        }).join('')}
+      </div>
+      <div class="row2">
+        <input id="new-team-j1" placeholder="Nome jogador(a) 1" />
+        <input id="new-team-tel1" placeholder="Telefone 1 (opcional)" />
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="new-team-sem-parceiro" data-action="toggle-sem-parceiro-admin" /> Sem parceiro(a) ainda</label>
+      <div id="new-team-parceiro-wrap" class="row2">
+        <input id="new-team-j2" placeholder="Nome jogador(a) 2" />
+        <input id="new-team-tel2" placeholder="Telefone 2 (opcional)" />
       </div>
       <div class="row">
-        <input id="new-team" placeholder="Ex: Ana & Bruna" />
         ${showCatSelect ? `<select id="new-team-cat">${state.categorias.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>` : ''}
-        <button data-action="add-team">+</button>
+        <button data-action="add-team">Adicionar dupla</button>
       </div>
     </div>`;
 }
@@ -978,6 +1058,7 @@ function bindEvents() {
     if (action === 'set-tipo') el.addEventListener('click', () => setTipoHandler(el.dataset.tipo));
     if (action === 'toggle-inscricoes') el.addEventListener('click', () => persist({ ...state, inscricoesAbertas: !state.inscricoesAbertas }));
     if (action === 'toggle-visivel') el.addEventListener('click', () => persist({ ...state, visivelPublico: !state.visivelPublico }));
+    if (action === 'toggle-notificacoes') el.addEventListener('click', toggleNotificacoesHandler);
     if (action === 'set-data-inicio') el.addEventListener('change', () => persist({ ...state, dataInicio: el.value }));
     if (action === 'set-data-fim') el.addEventListener('change', () => persist({ ...state, dataFim: el.value }));
     if (action === 'sel-cat') el.addEventListener('click', () => { selectedCategoria = el.dataset.cat; tab = 'rodadas'; render(); });
@@ -994,6 +1075,12 @@ function bindEvents() {
     if (action === 'add-player') el.addEventListener('click', addPlayerHandler);
     if (action === 'remove-team') el.addEventListener('click', () => persist({ ...state, teams: state.teams.filter((t) => t.id !== el.dataset.id) }));
     if (action === 'add-team') el.addEventListener('click', addTeamHandler);
+    if (action === 'toggle-sem-parceiro-admin') el.addEventListener('change', () => {
+      document.getElementById('new-team-parceiro-wrap').style.display = el.checked ? 'none' : '';
+    });
+    if (action === 'toggle-sem-parceiro-pub') el.addEventListener('change', () => {
+      document.getElementById('pub-team-parceiro-wrap').style.display = el.checked ? 'none' : '';
+    });
     if (action === 'pub-add-player') el.addEventListener('click', pubAddPlayerHandler);
     if (action === 'pub-add-team') el.addEventListener('click', pubAddTeamHandler);
     if (action === 'set-courts') el.addEventListener('change', () => persist({ ...state, numCourts: Math.max(1, Number(el.value) || 1) }));
@@ -1032,16 +1119,16 @@ function bindEvents() {
   });
   const newPlayerInput = document.getElementById('new-player');
   if (newPlayerInput) newPlayerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addPlayerHandler(); });
-  const newTeamInput = document.getElementById('new-team');
-  if (newTeamInput) newTeamInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addTeamHandler(); });
+  ['new-team-j1', 'new-team-tel1', 'new-team-j2', 'new-team-tel2'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addTeamHandler(); });
+  });
   const pubPlayerInput = document.getElementById('pub-player-name');
   if (pubPlayerInput) pubPlayerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddPlayerHandler(); });
   const pubPlayerPhone = document.getElementById('pub-player-phone');
   if (pubPlayerPhone) pubPlayerPhone.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddPlayerHandler(); });
-  const pubTeamInput = document.getElementById('pub-team-name');
-  if (pubTeamInput) pubTeamInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
-  const pubTeamPhone = document.getElementById('pub-team-phone');
-  if (pubTeamPhone) pubTeamPhone.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
+  ['pub-team-j1', 'pub-team-tel1', 'pub-team-j2', 'pub-team-tel2'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
+  });
   const buscaInput = document.getElementById('busca-atleta');
   if (buscaInput) buscaInput.addEventListener('input', () => {
     const termo = buscaInput.value.trim().toLowerCase();
@@ -1119,12 +1206,16 @@ function addPlayerHandler() {
   persist({ ...state, players: [...state.players, { id: uid(), name, categoria, confirmada: true, oculto: false }] });
 }
 function addTeamHandler() {
-  const input = document.getElementById('new-team');
-  const name = input.value.trim();
-  if (!name) return;
+  const j1 = document.getElementById('new-team-j1').value.trim();
+  if (!j1) return;
+  const tel1 = document.getElementById('new-team-tel1').value.trim();
+  const semParceiro = document.getElementById('new-team-sem-parceiro').checked;
+  const j2 = semParceiro ? '' : document.getElementById('new-team-j2').value.trim();
+  const tel2 = semParceiro ? '' : document.getElementById('new-team-tel2').value.trim();
   const catSelect = document.getElementById('new-team-cat');
   const categoria = catSelect ? catSelect.value : '';
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, categoria, confirmada: true, oculto: false }] });
+  const name = montarNomeDupla(j1, j2, semParceiro);
+  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: true, oculto: false }] });
 }
 function pubAddPlayerHandler() {
   const nameInput = document.getElementById('pub-player-name');
@@ -1141,15 +1232,22 @@ function pubAddPlayerHandler() {
   setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
 }
 function pubAddTeamHandler() {
-  const nameInput = document.getElementById('pub-team-name');
-  const phoneInput = document.getElementById('pub-team-phone');
-  const name = nameInput.value.trim();
-  const telefone = phoneInput.value.trim();
-  if (!name || !telefone) { alert('Preencha o nome da dupla e o telefone pra se inscrever.'); return; }
+  const j1 = document.getElementById('pub-team-j1').value.trim();
+  const tel1 = document.getElementById('pub-team-tel1').value.trim();
+  const semParceiro = document.getElementById('pub-team-sem-parceiro').checked;
+  const j2 = semParceiro ? '' : document.getElementById('pub-team-j2').value.trim();
+  const tel2 = semParceiro ? '' : document.getElementById('pub-team-tel2').value.trim();
+  if (!j1 || !tel1) { alert('Preencha seu nome e telefone pra se inscrever.'); return; }
+  if (!semParceiro && !j2) { alert('Preencha o nome do(a) parceiro(a), ou marque "sem parceiro(a)".'); return; }
   const catKey = currentCategoria();
   const categoria = catKey === DEFAULT_CAT ? '' : catKey;
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, telefone, categoria, confirmada: false, oculto: false }] });
-  nameInput.value = ''; phoneInput.value = '';
+  const name = montarNomeDupla(j1, j2, semParceiro);
+  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: false, oculto: false }] });
+  document.getElementById('pub-team-j1').value = '';
+  document.getElementById('pub-team-tel1').value = '';
+  document.getElementById('pub-team-j2').value = '';
+  document.getElementById('pub-team-tel2').value = '';
+  document.getElementById('pub-team-sem-parceiro').checked = false;
   pubSignupFlash = `"${name}" inscrita ✓ (aguardando confirmação do organizador)`;
   render();
   setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
