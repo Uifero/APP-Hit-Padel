@@ -31,6 +31,7 @@ function defaultState() {
     dataInicio: '',
     dataFim: '',
     nomesQuadras: ['Quadra 01', 'Quadra 02'],
+    encerrado: false,
     agendamentos: {},   // { [matchId]: { data, hora } }
   };
 }
@@ -407,12 +408,27 @@ function render() {
   bindEvents();
 }
 
+function renderTorneioCard(t) {
+  return `
+    <div class="round-block torneio-card" data-action="abrir-torneio" data-id="${t.id}">
+      <div class="round-title"><span>${esc(t.name || 'Torneio sem nome')}</span>${isAdmin ? `<span class="badge-${t.visivelPublico ? 'ok' : 'pending'}">${t.visivelPublico ? '✓ publicado' : '⏳ rascunho'}</span>` : ''}</div>
+      <div class="hint" style="text-align:left">${formatDataRange(t) || 'Data não definida'} · ${t.tipo === 'chaves' ? 'Torneio (chaves)' : t.tipo === 'mini' ? 'Americano + Final' : 'Americano'}${t.encerrado ? ' · encerrado' : ''}</div>
+      ${isAdmin ? `
+        <div class="torneio-card-acoes">
+          <button class="mode-btn" data-action="publicar-torneio" data-id="${t.id}" data-atual="${t.visivelPublico ? '1' : '0'}">${t.visivelPublico ? 'Despublicar' : 'Publicar'}</button>
+          <button class="mode-btn" data-action="encerrar-torneio" data-id="${t.id}" data-atual="${t.encerrado ? '1' : '0'}">${t.encerrado ? 'Reabrir' : 'Encerrar'}</button>
+          <button class="mode-btn btn-danger" data-action="remover-torneio" data-id="${t.id}" data-nome="${esc(t.name || 'este torneio')}">Remover</button>
+        </div>
+      ` : ''}
+    </div>`;
+}
+
 function renderLobby() {
-  const dataRangeTxtLobby = '';
   const lista = torneiosList ? Object.entries(torneiosList).map(([id, t]) => ({ id, ...t })) : null;
-  const meus = lista || [];
-  const publicados = meus.filter((t) => t.visivelPublico);
-  const listaParaMostrar = isAdmin ? meus : publicados;
+  const todos = lista || [];
+  const visiveis = isAdmin ? todos : todos.filter((t) => t.visivelPublico);
+  const ativos = visiveis.filter((t) => !t.encerrado);
+  const encerrados = visiveis.filter((t) => t.encerrado);
   root.innerHTML = `
     <header class="hp-header">
       <div class="hp-header-inner">
@@ -426,16 +442,8 @@ function renderLobby() {
     <main class="hp-main">
       <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Meus torneios' : 'Torneios em andamento'}</span></div>
       ${lista === null ? '<div class="hint">Carregando...</div>' : ''}
-      ${lista !== null && listaParaMostrar.length === 0 ? `<div class="hint">${isAdmin ? 'Nenhum torneio criado ainda.' : 'Nenhum torneio publicado no momento.'}</div>` : ''}
-      <div class="groups-wrap">
-        ${listaParaMostrar.map((t) => `
-          <div class="round-block torneio-card" data-action="abrir-torneio" data-id="${t.id}">
-            <div class="round-title"><span>${esc(t.name || 'Torneio sem nome')}</span>${isAdmin ? `<span class="badge-${t.visivelPublico ? 'ok' : 'pending'}">${t.visivelPublico ? '✓ publicado' : '⏳ rascunho'}</span>` : ''}</div>
-            <div class="hint" style="text-align:left">${formatDataRange(t) || 'Data não definida'} · ${t.tipo === 'chaves' ? 'Torneio (chaves)' : t.tipo === 'mini' ? 'Americano + Final' : 'Americano'}</div>
-            ${isAdmin ? `<button class="mode-btn" style="margin-top:8px" data-action="publicar-torneio" data-id="${t.id}" data-atual="${t.visivelPublico ? '1' : '0'}">${t.visivelPublico ? 'Despublicar' : 'Publicar torneio'}</button>` : ''}
-          </div>
-        `).join('')}
-      </div>
+      ${lista !== null && ativos.length === 0 ? `<div class="hint">${isAdmin ? 'Nenhum torneio ativo. Crie um novo abaixo.' : 'Nenhum torneio em andamento no momento.'}</div>` : ''}
+      <div class="groups-wrap">${ativos.map((t) => renderTorneioCard(t)).join('')}</div>
       ${isAdmin ? `
       <div class="card" style="margin-top:20px">
         <div class="card-head-static">+ Criar novo torneio</div>
@@ -444,6 +452,10 @@ function renderLobby() {
           <button class="btn-primary" data-action="criar-torneio">Criar e abrir</button>
         </div>
       </div>` : ''}
+      ${encerrados.length > 0 ? `
+      <div class="round-title" style="margin-top:24px"><span>Torneios encerrados (${encerrados.length})</span></div>
+      <div class="groups-wrap">${encerrados.map((t) => renderTorneioCard(t)).join('')}</div>
+      ` : ''}
     </main>
     <div id="pin-modal-slot"></div>
     <footer class="hp-footer">atualiza automaticamente</footer>
@@ -945,6 +957,19 @@ function bindEvents() {
       const id = el.dataset.id;
       const novoValor = el.dataset.atual !== '1';
       try { await set(ref(db, 'torneios/' + id + '/visivelPublico'), novoValor); } catch (err) { console.error(err); }
+    });
+    if (action === 'encerrar-torneio') el.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = el.dataset.id;
+      const novoValor = el.dataset.atual !== '1';
+      try { await set(ref(db, 'torneios/' + id + '/encerrado'), novoValor); } catch (err) { console.error(err); }
+    });
+    if (action === 'remover-torneio') el.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = el.dataset.id;
+      const nome = el.dataset.nome;
+      if (!confirm(`Remover "${nome}" definitivamente? Essa ação não pode ser desfeita — todos os dados desse torneio serão apagados.`)) return;
+      try { await set(ref(db, 'torneios/' + id), null); } catch (err) { console.error(err); }
     });
     if (action === 'criar-torneio') el.addEventListener('click', () => {
       const nome = document.getElementById('novo-torneio-nome').value.trim();
