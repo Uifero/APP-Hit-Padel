@@ -346,9 +346,9 @@ function carregarTorneioAtual() {
   });
 }
 
-async function criarNovoTorneio(nome) {
+async function criarNovoTorneio(nome, tipo) {
   const id = uid() + uid();
-  const novo = { ...defaultState(), name: nome || 'Novo torneio' };
+  const novo = { ...defaultState(), name: nome || 'Novo torneio', tipo: tipo || 'americano' };
   try { await set(ref(db, 'torneios/' + id), novo); } catch (e) { console.error('Falha ao criar torneio', e); }
   selecionarTorneio(id);
 }
@@ -460,11 +460,15 @@ function render() {
   bindEvents();
 }
 
+function tipoLabelOf(tipo) {
+  return tipo === 'chaves' ? 'Torneio' : tipo === 'mini' ? 'Americano + Final' : 'Torneio Americano';
+}
+
 function renderTorneioCard(t) {
   return `
     <div class="round-block torneio-card" data-action="abrir-torneio" data-id="${t.id}">
       <div class="round-title"><span>${esc(t.name || 'Torneio sem nome')}</span>${isAdmin ? `<span class="badge-${t.visivelPublico ? 'ok' : 'pending'}">${t.visivelPublico ? '✓ publicado' : '⏳ rascunho'}</span>` : ''}</div>
-      <div class="hint" style="text-align:left">${formatDataRange(t) || 'Data não definida'} · ${t.tipo === 'chaves' ? 'Torneio (chaves)' : t.tipo === 'mini' ? 'Americano + Final' : 'Americano'}${t.encerrado ? ' · encerrado' : ''}</div>
+      <div class="hint" style="text-align:left">${formatDataRange(t) || 'Data não definida'}${t.encerrado ? ' · encerrado' : ''}</div>
       ${isAdmin ? `
         <div class="torneio-card-acoes">
           <button class="mode-btn" data-action="publicar-torneio" data-id="${t.id}" data-atual="${t.visivelPublico ? '1' : '0'}">${t.visivelPublico ? 'Despublicar' : 'Publicar'}</button>
@@ -473,6 +477,15 @@ function renderTorneioCard(t) {
         </div>
       ` : ''}
     </div>`;
+}
+
+function renderModuloTipo(tipo, lista, isAdminView) {
+  const dessteTipo = lista.filter((t) => (t.tipo || 'americano') === tipo);
+  if (!isAdminView && dessteTipo.length === 0) return '';
+  return `
+    <div class="round-title" style="margin-top:20px"><span>${tipoLabelOf(tipo)} (${dessteTipo.length})</span></div>
+    ${dessteTipo.length === 0 ? `<div class="hint">Nenhum torneio deste tipo ainda.</div>` : `<div class="groups-wrap">${dessteTipo.map((t) => renderTorneioCard(t)).join('')}</div>`}
+  `;
 }
 
 function renderLobby() {
@@ -494,14 +507,31 @@ function renderLobby() {
     <main class="hp-main">
       <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Meus torneios' : 'Torneios em andamento'}</span></div>
       ${lista === null ? '<div class="hint">Carregando...</div>' : ''}
-      ${lista !== null && ativos.length === 0 ? `<div class="hint">${isAdmin ? 'Nenhum torneio ativo. Crie um novo abaixo.' : 'Nenhum torneio em andamento no momento.'}</div>` : ''}
-      <div class="groups-wrap">${ativos.map((t) => renderTorneioCard(t)).join('')}</div>
+      ${lista !== null && isAdmin ? `
+        ${renderModuloTipo('americano', ativos, true)}
+        ${renderModuloTipo('mini', ativos, true)}
+        ${renderModuloTipo('chaves', ativos, true)}
+      ` : ''}
+      ${lista !== null && !isAdmin ? `
+        ${ativos.length === 0 ? '<div class="hint">Nenhum torneio em andamento no momento.</div>' : ''}
+        ${renderModuloTipo('americano', ativos, false)}
+        ${renderModuloTipo('mini', ativos, false)}
+        ${renderModuloTipo('chaves', ativos, false)}
+      ` : ''}
       ${isAdmin ? `
       <div class="card" style="margin-top:20px">
         <div class="card-head-static">+ Criar novo torneio</div>
         <div class="card-body">
           <div class="field"><input id="novo-torneio-nome" placeholder="Nome do torneio" /></div>
-          <button class="btn-primary" data-action="criar-torneio">Criar e abrir</button>
+          <div class="field">
+            <label>Tipo</label>
+            <div class="mode-row">
+              <button class="mode-btn tipo-novo-torneio active" data-action="sel-tipo-novo" data-tipo="americano">Torneio Americano</button>
+              <button class="mode-btn tipo-novo-torneio" data-action="sel-tipo-novo" data-tipo="mini">Americano + Final</button>
+              <button class="mode-btn tipo-novo-torneio" data-action="sel-tipo-novo" data-tipo="chaves">Torneio</button>
+            </div>
+          </div>
+          <button class="btn-primary" data-action="criar-torneio" data-tipo="americano">Criar e abrir</button>
         </div>
       </div>` : ''}
       ${encerrados.length > 0 ? `
@@ -591,6 +621,84 @@ function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
   `;
 }
 
+function hojeISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function resumoVisaoGeral(catKey) {
+  const items = collectJogos(catKey);
+  const total = items.length;
+  const jogados = items.filter((it) => it.scoreA != null).length;
+  const pendentes = total - jogados;
+  const agora = new Date();
+  const hoje = hojeISO();
+  const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+  const futuros = items.filter((it) => it.scoreA == null && it.data && it.hora && (it.data > hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) >= agoraMin)));
+  futuros.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
+  return { total, jogados, pendentes, proxima: futuros[0] || null };
+}
+function statusQuadrasAoVivo(catKey) {
+  const items = collectJogos(catKey);
+  const hoje = hojeISO();
+  const agora = new Date();
+  const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+  const board = [];
+  for (let q = 1; q <= state.numCourts; q++) {
+    const doDia = items.filter((it) => it.court === q && it.data === hoje && it.scoreA == null && it.hora)
+      .sort((a, b) => a.hora.localeCompare(b.hora));
+    let entry = { quadra: q, nome: quadraNome(state, q), status: 'livre', jogo: null };
+    for (const it of doDia) {
+      const [h, mi] = it.hora.split(':').map(Number);
+      const inicioMin = h * 60 + mi;
+      if (agoraMin < inicioMin) { entry = { quadra: q, nome: quadraNome(state, q), status: 'proxima', jogo: it }; break; }
+      if (agoraMin < inicioMin + 60) { entry = { quadra: q, nome: quadraNome(state, q), status: 'andamento', jogo: it }; break; }
+      entry = { quadra: q, nome: quadraNome(state, q), status: 'pendente', jogo: it };
+      break;
+    }
+    board.push(entry);
+  }
+  return board;
+}
+const STATUS_AO_VIVO = {
+  andamento: { emoji: '🟢', texto: 'Em andamento' },
+  proxima: { emoji: '🟡', texto: 'Próxima partida' },
+  pendente: { emoji: '🔴', texto: 'Resultado pendente' },
+  livre: { emoji: '⚪', texto: 'Livre' },
+};
+function renderAoVivoModulo(catKey) {
+  if (state.tipo === 'chaves') {
+    const items = collectJogos(catKey);
+    const hoje = hojeISO();
+    const agora = new Date();
+    const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+    const doDia = items.filter((it) => it.data === hoje && it.scoreA == null);
+    const atrasadas = doDia.filter((it) => it.hora && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) < agoraMin);
+    const proximas = doDia.filter((it) => !atrasadas.includes(it));
+    return `
+      <div class="hint" style="text-align:left;margin-bottom:10px">No modo Torneio as partidas não têm quadra fixa, então a lista abaixo é organizada por horário de hoje em vez de por quadra.</div>
+      <div class="round-title"><span>🔴 Resultado pendente (${atrasadas.length})</span></div>
+      ${atrasadas.length ? atrasadas.map((it) => renderAoVivoLinha(it)).join('') : `<div class="hint">Nenhuma.</div>`}
+      <div class="round-title" style="margin-top:14px"><span>🟡 Próximas hoje (${proximas.length})</span></div>
+      ${proximas.length ? proximas.map((it) => renderAoVivoLinha(it)).join('') : `<div class="hint">Nenhuma.</div>`}
+    `;
+  }
+  const board = statusQuadrasAoVivo(catKey);
+  return `
+    <div class="aovivo-grid">
+      ${board.map((e) => `
+        <div class="aovivo-card aovivo-${e.status}">
+          <div class="aovivo-quadra">${esc(e.nome)}</div>
+          <div class="aovivo-status">${STATUS_AO_VIVO[e.status].emoji} ${STATUS_AO_VIVO[e.status].texto}</div>
+          ${e.jogo ? `<div class="aovivo-jogo">${e.jogo.hora} · ${esc(e.jogo.a)} × ${esc(e.jogo.b)}</div>` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+function renderAoVivoLinha(it) {
+  return `<div class="match"><div class="match-head"><span class="court-tag">${it.hora || 'sem horário'}</span></div><div class="team-row"><span class="team-name">${esc(it.a)}</span></div><div class="vs">×</div><div class="team-row"><span class="team-name">${esc(it.b)}</span></div></div>`;
+}
+
 function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
   if (painelAdmin) return renderPainelModulo(painelAdmin, maxCourts, catPlayers, catTeams);
   const catKey = currentCategoria();
@@ -599,8 +707,20 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
     : catPlayers.filter((p) => p.confirmada).length;
   const rodadasGeradas = (state.rounds[catKey] || []).length;
   const gruposGerados = state.grupos.filter((g) => g.categoria === catKey).length;
-  const tipoLabel = state.tipo === 'chaves' ? 'Torneio' : state.tipo === 'mini' ? 'Americano + Final' : 'Americano';
+  const tipoLabel = tipoLabelOf(state.tipo);
+  const resumo = resumoVisaoGeral(catKey);
   return `
+  <section class="card">
+    <div class="card-head-static">📊 Visão geral</div>
+    <div class="card-body">
+      <div class="visaogeral-grid">
+        <div class="visaogeral-item"><div class="visaogeral-num">${resumo.total}</div><div class="visaogeral-label">Partidas totais</div></div>
+        <div class="visaogeral-item"><div class="visaogeral-num">${resumo.jogados}</div><div class="visaogeral-label">Com resultado</div></div>
+        <div class="visaogeral-item"><div class="visaogeral-num">${resumo.pendentes}</div><div class="visaogeral-label">Pendentes</div></div>
+      </div>
+      ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
+    </div>
+  </section>
   <section class="card">
     <div class="card-head-static">📋 Painel de gestão</div>
     <div class="card-body">
@@ -625,6 +745,10 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
           <div class="dash-title">Chaveamento</div>
           <div class="dash-sub">${state.tipo === 'chaves' ? `${gruposGerados} chave(s)` : `${rodadasGeradas} rodada(s)`}</div>
         </button>
+        <button class="dash-card" data-action="abrir-painel" data-painel="aovivo">
+          <div class="dash-title">Ao Vivo</div>
+          <div class="dash-sub">Status por quadra agora</div>
+        </button>
         <button class="dash-card" data-action="ir-jogos">
           <div class="dash-title">Jogos</div>
           <div class="dash-sub">Ver e agendar horários</div>
@@ -636,13 +760,14 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
 
 function renderPainelModulo(painel, maxCourts, catPlayers, catTeams) {
   const minRounds = minRoundsForFullCoverage(catPlayers.length, Math.min(state.numCourts, maxCourts));
-  const titulos = { config: 'Configurações', quadras: 'Quadras e Rodadas', inscricoes: 'Inscrições', duplas: 'Duplas', chaveamento: 'Chaveamento' };
+  const titulos = { config: 'Configurações', quadras: 'Quadras e Rodadas', inscricoes: 'Inscrições', duplas: 'Duplas', chaveamento: 'Chaveamento', aovivo: 'Ao Vivo' };
   let content = '';
   if (painel === 'config') content = renderConfigModulo();
-  else if (painel === 'quadras') content = renderQuadrasModulo(maxCourts);
+  else if (painel === 'quadras') content = renderQuadrasModulo(maxCourts, minRounds);
   else if (painel === 'inscricoes') content = state.tipo === 'chaves' ? renderTeamsSetup() : renderPlayersSetup(minRounds);
   else if (painel === 'duplas') content = renderDuplasModulo(catTeams, catPlayers);
   else if (painel === 'chaveamento') content = renderChaveamentoModulo();
+  else if (painel === 'aovivo') content = renderAoVivoModulo(currentCategoria());
   return `
   <section class="card">
     <button class="card-head" data-action="fechar-painel"><span>← ${esc(titulos[painel] || 'Voltar')}</span><span>▲</span></button>
@@ -689,12 +814,16 @@ function renderConfigModulo() {
   `;
 }
 
-function renderQuadrasModulo(maxCourts) {
+function renderQuadrasModulo(maxCourts, minRounds) {
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
       <div class="field"><label>Rodadas</label><input type="number" min="1" max="30" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
     </div>
+    ${state.tipo !== 'chaves' && minRounds > 0 ? `
+      <button class="mode-btn" data-action="usar-cobertura-total" data-min="${minRounds}">Preencher com ~${minRounds} rodadas (todos jogam com todos)</button>
+      <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), seriam necessárias ~${minRounds} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez.</div>
+    ` : ''}
     <div class="field">
       <label>Nome das quadras</label>
       <div class="row2">
@@ -752,9 +881,7 @@ function renderPlayersSetup(minRounds) {
         ${showCatSelect ? `<select id="new-player-cat">${state.categorias.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>` : ''}
         <button data-action="add-player">+</button>
       </div>
-    </div>
-    ${minRounds > 0 ? `<div class="hint" style="text-align:left">Com ${state.players.filter((p) => categoriaOf(p) === currentCategoria()).length} jogadoras (categoria atual) e ${state.numCourts} quadra(s), seriam necessárias <b>~${minRounds} rodadas</b> pra cobertura total.</div>` : ''}
-  `;
+    </div>`;
 }
 
 function montarNomeDupla(j1, j2, semParceiro) {
@@ -1051,9 +1178,14 @@ function bindEvents() {
       if (!confirm(`Remover "${nome}" definitivamente? Essa ação não pode ser desfeita — todos os dados desse torneio serão apagados.`)) return;
       try { await set(ref(db, 'torneios/' + id), null); } catch (err) { console.error(err); }
     });
+    if (action === 'sel-tipo-novo') el.addEventListener('click', () => {
+      document.querySelectorAll('.tipo-novo-torneio').forEach((b) => b.classList.remove('active'));
+      el.classList.add('active');
+      document.querySelector('[data-action="criar-torneio"]').dataset.tipo = el.dataset.tipo;
+    });
     if (action === 'criar-torneio') el.addEventListener('click', () => {
       const nome = document.getElementById('novo-torneio-nome').value.trim();
-      criarNovoTorneio(nome);
+      criarNovoTorneio(nome, el.dataset.tipo);
     });
     if (action === 'set-tipo') el.addEventListener('click', () => setTipoHandler(el.dataset.tipo));
     if (action === 'toggle-inscricoes') el.addEventListener('click', () => persist({ ...state, inscricoesAbertas: !state.inscricoesAbertas }));
@@ -1092,6 +1224,7 @@ function bindEvents() {
       persist({ ...state, nomesQuadras: nomes });
     });
     if (action === 'set-rounds') el.addEventListener('change', () => persist({ ...state, numRounds: Math.max(1, Math.min(30, Number(el.value) || 1)) }));
+    if (action === 'usar-cobertura-total') el.addEventListener('click', () => persist({ ...state, numRounds: Math.min(30, Number(el.dataset.min)) }));
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
     if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
