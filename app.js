@@ -13,6 +13,11 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 const pairKey = (a, b) => [a, b].sort().join('~');
 const DEFAULT_CAT = '_default';
 const CATEGORIA_SUGESTOES = ['Cat Iniciante', '7ª Cat', '6ª Cat', '5ª Cat', '4ª Cat', 'Soma 9', 'Soma 11', 'Soma 13', 'Masculina', 'Feminina', 'Mista'];
+// Uma partida só conta como "jogada" quando os dois placares existem e pelo menos um é maior que 0.
+// 0x0 ou campos vazios ficam como pendente (permite salvar um "reset" do placar sem contar como resultado real).
+function partidaJogada(m) {
+  return m.scoreA != null && m.scoreB != null && (m.scoreA > 0 || m.scoreB > 0);
+}
 
 function defaultState() {
   return {
@@ -31,6 +36,8 @@ function defaultState() {
     dataInicio: '',
     dataFim: '',
     nomesQuadras: ['Quadra 01', 'Quadra 02'],
+    horaInicioTorneio: '',
+    duracaoJogoMin: 40,
     encerrado: false,
     agendamentos: {},   // { [matchId]: { data, hora } }
   };
@@ -90,7 +97,7 @@ function computeStats(players, rounds) {
   const stats = {};
   players.forEach((p) => { stats[p.id] = { id: p.id, name: p.name, partidas: 0, vitorias: 0, derrotas: 0, gf: 0, gc: 0 }; });
   rounds.forEach((rd) => rd.matches.forEach((m) => {
-    if (m.scoreA == null || m.scoreB == null) return;
+    if (!partidaJogada(m)) return;
     [[m.teamA, m.scoreA, m.scoreB], [m.teamB, m.scoreB, m.scoreA]].forEach(([team, gf, gc]) => {
       team.forEach((pid) => { const s = stats[pid]; if (!s) return; s.partidas++; s.gf += gf; s.gc += gc; if (gf > gc) s.vitorias++; else if (gf < gc) s.derrotas++; });
     });
@@ -106,7 +113,7 @@ function computeStats(players, rounds) {
     const withH2H = cluster.map((p) => ({ ...p, h2h: 0 }));
     withH2H.forEach((p) => {
       rounds.forEach((rd) => rd.matches.forEach((m) => {
-        if (m.scoreA == null || m.scoreB == null) return;
+        if (!partidaJogada(m)) return;
         const inA = m.teamA.includes(p.id), inB = m.teamB.includes(p.id);
         if (!inA && !inB) return;
         const oppTeam = inA ? m.teamB : m.teamA;
@@ -125,7 +132,7 @@ function minRoundsForFullCoverage(numPlayers, numCourts) {
   const totalPairs = (numPlayers * (numPlayers - 1)) / 2;
   return Math.ceil(totalPairs / (numCourts * 2));
 }
-function roundsWithoutScores(rounds) { return rounds.some((rd) => rd.matches.some((m) => m.scoreA == null || m.scoreB == null)); }
+function roundsWithoutScores(rounds) { return rounds.some((rd) => rd.matches.some((m) => !partidaJogada(m))); }
 function generateFinalRound(players, rounds) {
   const stats = computeStats(players, rounds);
   const top4 = stats.slice(0, 4);
@@ -151,7 +158,7 @@ function computeGroupStandings(group) {
   const stats = {};
   group.teamIds.forEach((id) => { stats[id] = { id, vitorias: 0, derrotas: 0, saldo: 0 }; });
   group.matches.forEach((m) => {
-    if (m.scoreA == null || m.scoreB == null) return;
+    if (!partidaJogada(m)) return;
     const diff = m.scoreA - m.scoreB;
     if (diff > 0) { stats[m.teamA].vitorias++; stats[m.teamB].derrotas++; } else { stats[m.teamB].vitorias++; stats[m.teamA].derrotas++; }
     stats[m.teamA].saldo += diff; stats[m.teamB].saldo += -diff;
@@ -167,7 +174,7 @@ function computeGroupStandings(group) {
     const withH2H = cluster.map((p) => ({ ...p, h2h: 0 }));
     withH2H.forEach((p) => {
       group.matches.forEach((m) => {
-        if (m.scoreA == null || m.scoreB == null) return;
+        if (!partidaJogada(m)) return;
         const inA = m.teamA === p.id, inB = m.teamB === p.id;
         if (!inA && !inB) return;
         const oppId = inA ? m.teamB : m.teamA;
@@ -240,7 +247,7 @@ function generateEliminationFromGroups(groups) {
   round1.forEach((m, i) => { if (m.isBye) propagateWinner(bracket, 0, i, m.winner); });
   return bracket;
 }
-function allGroupMatchesScored(groups) { return groups.every((g) => g.matches.every((m) => m.scoreA != null && m.scoreB != null)); }
+function allGroupMatchesScored(groups) { return groups.every((g) => g.matches.every((m) => partidaJogada(m))); }
 
 // ---------- estado local / UI ----------
 let state = null;
@@ -485,8 +492,8 @@ function statsGeraisTorneios(lista) {
   const proximas = [];
   ativos.forEach((t) => {
     partidasDoTorneio(t).forEach((it) => {
-      if (it.data === hoje) { partidasHoje++; if (it.scoreA == null) partidasPendentesHoje++; }
-      if (it.scoreA == null && it.data && it.hora) proximas.push({ ...it, torneioNome: t.name, torneioId: t.id });
+      if (it.data === hoje) { partidasHoje++; if (!partidaJogada(it)) partidasPendentesHoje++; }
+      if (!partidaJogada(it) && it.data && it.hora) proximas.push({ ...it, torneioNome: t.name, torneioId: t.id });
     });
   });
   proximas.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
@@ -564,7 +571,7 @@ function renderCentralGestao(ativos, encerrados) {
             <tbody>
               ${listaFiltrada.length === 0 ? `<tr><td colspan="7" class="hint">Nenhum torneio encontrado.</td></tr>` : listaFiltrada.map((t) => {
                 const partidas = partidasDoTorneio(t);
-                const jogadas = partidas.filter((p) => p.scoreA != null).length;
+                const jogadas = partidas.filter((p) => partidaJogada(p)).length;
                 const participantes = t.tipo === 'chaves' ? (t.teams || []).length : (t.players || []).length;
                 return `<tr class="lobby-row" data-action="abrir-torneio" data-id="${t.id}">
                   <td>${esc(t.name || 'Torneio sem nome')}</td>
@@ -733,12 +740,12 @@ function hojeISO() {
 function resumoVisaoGeral(catKey) {
   const items = collectJogos(catKey);
   const total = items.length;
-  const jogados = items.filter((it) => it.scoreA != null).length;
+  const jogados = items.filter((it) => partidaJogada(it)).length;
   const pendentes = total - jogados;
   const agora = new Date();
   const hoje = hojeISO();
   const agoraMin = agora.getHours() * 60 + agora.getMinutes();
-  const futuros = items.filter((it) => it.scoreA == null && it.data && it.hora && (it.data > hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) >= agoraMin)));
+  const futuros = items.filter((it) => !partidaJogada(it) && it.data && it.hora && (it.data > hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) >= agoraMin)));
   futuros.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
   return { total, jogados, pendentes, proxima: futuros[0] || null };
 }
@@ -749,7 +756,7 @@ function statusQuadrasAoVivo(catKey) {
   const agoraMin = agora.getHours() * 60 + agora.getMinutes();
   const board = [];
   for (let q = 1; q <= state.numCourts; q++) {
-    const doDia = items.filter((it) => it.court === q && it.data === hoje && it.scoreA == null && it.hora)
+    const doDia = items.filter((it) => it.court === q && it.data === hoje && !partidaJogada(it) && it.hora)
       .sort((a, b) => a.hora.localeCompare(b.hora));
     let entry = { quadra: q, nome: quadraNome(state, q), status: 'livre', jogo: null };
     for (const it of doDia) {
@@ -776,7 +783,7 @@ function renderAoVivoModulo(catKey) {
     const hoje = hojeISO();
     const agora = new Date();
     const agoraMin = agora.getHours() * 60 + agora.getMinutes();
-    const doDia = items.filter((it) => it.data === hoje && it.scoreA == null);
+    const doDia = items.filter((it) => it.data === hoje && !partidaJogada(it));
     const atrasadas = doDia.filter((it) => it.hora && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) < agoraMin);
     const proximas = doDia.filter((it) => !atrasadas.includes(it));
     return `
@@ -814,6 +821,7 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
   const gruposGerados = state.grupos.filter((g) => g.categoria === catKey).length;
   const tipoLabel = tipoLabelOf(state.tipo);
   const resumo = resumoVisaoGeral(catKey);
+  const naoGerouAinda = state.tipo === 'chaves' ? state.grupos.length === 0 : Object.values(state.rounds).every((r) => r.length === 0);
   return `
   <section class="card">
     <div class="card-head-static">📊 Visão geral</div>
@@ -826,6 +834,13 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
       ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
     </div>
   </section>
+  ${naoGerouAinda ? `
+  <section class="card cta-card">
+    <div class="card-body">
+      <button class="btn-primary" style="width:100%" data-action="${state.tipo === 'chaves' ? 'gerar-grupos' : 'sortear'}">🔀 ${state.tipo === 'chaves' ? 'Gerar chaves' : 'Sortear rodadas'}</button>
+      <div class="hint" style="text-align:left;margin-top:6px">Cadastre as ${state.tipo === 'chaves' ? 'duplas' : 'jogadoras'} em "Inscrições" antes de sortear.</div>
+    </div>
+  </section>` : ''}
   <section class="card">
     <div class="card-head-static">📋 Painel de gestão</div>
     <div class="card-body">
@@ -843,7 +858,7 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
           <div class="dash-sub">${state.tipo === 'chaves' ? state.teams.length : state.players.length} no total</div>
         </button>
         <button class="dash-card" data-action="abrir-painel" data-painel="duplas">
-          <div class="dash-title">Duplas</div>
+          <div class="dash-title">${state.tipo === 'chaves' ? 'Duplas' : 'Jogadoras'}</div>
           <div class="dash-sub">${totalConfirmadas} confirmada(s)</div>
         </button>
         <button class="dash-card" data-action="abrir-painel" data-painel="chaveamento">
@@ -935,6 +950,11 @@ function renderQuadrasModulo(maxCourts, minRounds) {
         ${Array.from({ length: state.numCourts }, (_, i) => `<input class="court-name-input" data-action="set-court-name" data-idx="${i}" value="${esc(state.nomesQuadras[i] || `Quadra ${String(i + 1).padStart(2, '0')}`)}" />`).join('')}
       </div>
     </div>
+    <div class="row2">
+      <div class="field"><label>Horário de início dos jogos</label><input type="time" id="hora-inicio-torneio" value="${esc(state.horaInicioTorneio)}" data-action="set-hora-inicio-torneio" /></div>
+      <div class="field"><label>Duração de cada jogo (min)</label><input type="number" min="1" id="duracao-jogo-min" value="${state.duracaoJogoMin}" data-action="set-duracao-jogo-min" /></div>
+    </div>
+    <div class="hint" style="text-align:left">Preenchidos junto com a Data de início (na Configuração), os horários de todos os jogos são gerados automaticamente assim que você sortear as rodadas ou gerar as chaves — sem precisar entrar na aba Jogos depois.</div>
   `;
 }
 
@@ -1036,7 +1056,7 @@ function quadraNome(state, courtNum) {
 }
 function renderMatch(m, ri) {
   const d = drafts[m.id] || { a: m.scoreA ?? '', b: m.scoreB ?? '' };
-  const done = m.scoreA != null && m.scoreB != null;
+  const done = partidaJogada(m);
   const editing = editingMatches.has(m.id);
   const showInputs = isAdmin && (!done || editing);
   return `
@@ -1113,7 +1133,7 @@ function renderGroupCard(g) {
 }
 function renderGroupMatch(m) {
   const d = drafts[m.id] || { a: m.scoreA ?? '', b: m.scoreB ?? '' };
-  const done = m.scoreA != null && m.scoreB != null;
+  const done = partidaJogada(m);
   const editing = editingMatches.has(m.id);
   const showInputs = isAdmin && (!done || editing);
   return `
@@ -1332,6 +1352,8 @@ function bindEvents() {
     });
     if (action === 'set-rounds') el.addEventListener('change', () => persist({ ...state, numRounds: Math.max(1, Math.min(30, Number(el.value) || 1)) }));
     if (action === 'usar-cobertura-total') el.addEventListener('click', () => persist({ ...state, numRounds: Math.min(30, Number(el.dataset.min)) }));
+    if (action === 'set-hora-inicio-torneio') el.addEventListener('change', () => persist({ ...state, horaInicioTorneio: el.value }));
+    if (action === 'set-duracao-jogo-min') el.addEventListener('change', () => persist({ ...state, duracaoJogoMin: Math.max(1, Number(el.value) || 40) }));
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
     if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
@@ -1508,6 +1530,34 @@ function toggleOcultoHandler(list, id) {
   const key = list === 'players' ? 'players' : 'teams';
   persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, oculto: !x.oculto } : x) });
 }
+function agendamentosAutoParaRounds(roundsPorCategoria, dataInput, horaInput, duracao, agendamentosBase) {
+  const agendamentos = { ...agendamentosBase };
+  Object.values(roundsPorCategoria).forEach((catRounds) => {
+    const [h, m] = horaInput.split(':').map(Number);
+    let cursorMin = h * 60 + m;
+    catRounds.forEach((rd) => {
+      const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+      rd.matches.forEach((m2) => { agendamentos[m2.id] = { data: dataInput, hora: horaStr }; });
+      cursorMin += duracao;
+    });
+  });
+  return agendamentos;
+}
+function agendamentosAutoParaGrupos(novosGrupos, dataInput, horaInput, duracao, agendamentosBase) {
+  const agendamentos = { ...agendamentosBase };
+  const porCategoria = {};
+  novosGrupos.forEach((g) => { (porCategoria[g.categoria] ||= []).push(g); });
+  Object.values(porCategoria).forEach((grupos) => {
+    const [h, m] = horaInput.split(':').map(Number);
+    let cursorMin = h * 60 + m;
+    grupos.forEach((g) => {
+      const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+      g.matches.forEach((m2) => { agendamentos[m2.id] = { data: dataInput, hora: horaStr }; });
+      cursorMin += duracao;
+    });
+  });
+  return agendamentos;
+}
 function sortearHandler() {
   const newRounds = { ...state.rounds };
   let algumaGerada = false;
@@ -1521,7 +1571,11 @@ function sortearHandler() {
   if (!algumaGerada) return;
   const temDadosAntes = Object.values(state.rounds).some((r) => r.length);
   if (temDadosAntes && !confirm('Isso vai gerar um novo sorteio e apagar os placares atuais. Continuar?')) return;
-  persist({ ...state, rounds: newRounds });
+  const novoState = { ...state, rounds: newRounds };
+  if (state.dataInicio && state.horaInicioTorneio) {
+    novoState.agendamentos = agendamentosAutoParaRounds(newRounds, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos);
+  }
+  persist(novoState);
   tab = 'rodadas';
 }
 function gerarGruposHandler() {
@@ -1534,7 +1588,11 @@ function gerarGruposHandler() {
     novosGrupos = novosGrupos.concat(generateGroups(catTeams, catKey));
   });
   if (!novosGrupos.length) return;
-  persist({ ...state, grupos: novosGrupos, eliminatorias: {} });
+  const novoState = { ...state, grupos: novosGrupos, eliminatorias: {} };
+  if (state.dataInicio && state.horaInicioTorneio) {
+    novoState.agendamentos = agendamentosAutoParaGrupos(novosGrupos, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos);
+  }
+  persist(novoState);
 }
 function gerarHorariosHandler(catKey) {
   const dataInput = document.getElementById('auto-data').value;
@@ -1568,9 +1626,13 @@ function gerarEliminatoriaSeNecessario(grupos, catKey, eliminatoriasAtuais) {
 }
 function saveGroupScoreHandler(matchId) {
   const d = drafts[matchId];
-  if (!d || d.a === '' || d.b === '') return;
-  const a = Number(d.a), b = Number(d.b);
-  if (a === b) { alert('Não pode empatar — ajuste o placar.'); return; }
+  if (!d) return;
+  const bothEmpty = d.a === '' && d.b === '';
+  const bothFilled = d.a !== '' && d.b !== '';
+  if (!bothEmpty && !bothFilled) return;
+  const a = bothEmpty ? null : Number(d.a);
+  const b = bothEmpty ? null : Number(d.b);
+  if (!bothEmpty && a === b) { alert('Não pode empatar — ajuste o placar.'); return; }
   const grupos = state.grupos.map((g) => ({ ...g, matches: g.matches.map((m) => m.id === matchId ? { ...m, scoreA: a, scoreB: b } : m) }));
   const scoredGroup = grupos.find((g) => g.matches.some((m) => m.id === matchId));
   const eliminatorias = scoredGroup ? gerarEliminatoriaSeNecessario(grupos, scoredGroup.categoria, state.eliminatorias) : state.eliminatorias;
@@ -1587,10 +1649,15 @@ function gerarFinalHandler() {
 }
 function saveScoreHandler(matchId) {
   const d = drafts[matchId];
-  if (!d || d.a === '' || d.b === '') return;
+  if (!d) return;
+  const bothEmpty = d.a === '' && d.b === '';
+  const bothFilled = d.a !== '' && d.b !== '';
+  if (!bothEmpty && !bothFilled) return;
+  const a = bothEmpty ? null : Number(d.a);
+  const b = bothEmpty ? null : Number(d.b);
   const newRounds = { ...state.rounds };
   Object.keys(newRounds).forEach((catKey) => {
-    newRounds[catKey] = newRounds[catKey].map((rd) => ({ ...rd, matches: rd.matches.map((m) => m.id === matchId ? { ...m, scoreA: Number(d.a), scoreB: Number(d.b) } : m) }));
+    newRounds[catKey] = newRounds[catKey].map((rd) => ({ ...rd, matches: rd.matches.map((m) => m.id === matchId ? { ...m, scoreA: a, scoreB: b } : m) }));
   });
   editingMatches.delete(matchId);
   persist({ ...state, rounds: newRounds });
