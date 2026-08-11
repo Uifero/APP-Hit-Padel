@@ -460,6 +460,39 @@ function render() {
   bindEvents();
 }
 
+function partidasDoTorneio(t) {
+  const items = [];
+  const nomeJogador = (id) => (t.players || []).find((p) => p.id === id)?.name || '?';
+  const nomeDupla = (id) => id ? ((t.teams || []).find((x) => x.id === id)?.name || '?') : 'aguardando';
+  if (t.tipo === 'chaves') {
+    (t.grupos || []).forEach((g) => g.matches.forEach((m) => items.push({ id: m.id, a: nomeDupla(m.teamA), b: nomeDupla(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB })));
+    Object.values(t.eliminatorias || {}).forEach((rounds) => rounds.forEach((rd) => rd.forEach((m) => { if (!m.isBye) items.push({ id: m.id, a: nomeDupla(m.teamA), b: nomeDupla(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB }); })));
+  } else {
+    Object.values(t.rounds || {}).forEach((rounds) => rounds.forEach((rd) => rd.matches.forEach((m) => items.push({ id: m.id, a: (m.teamA || []).map(nomeJogador).join(' + '), b: (m.teamB || []).map(nomeJogador).join(' + '), scoreA: m.scoreA, scoreB: m.scoreB }))));
+  }
+  return items.map((it) => {
+    const ag = (t.agendamentos || {})[it.id] || {};
+    return { ...it, data: ag.data || '', hora: ag.hora || '' };
+  });
+}
+function statsGeraisTorneios(lista) {
+  const ativos = lista.filter((t) => !t.encerrado);
+  const encerrados = lista.filter((t) => t.encerrado);
+  const publicados = ativos.filter((t) => t.visivelPublico);
+  const inscricoesAbertasCount = ativos.filter((t) => t.inscricoesAbertas).length;
+  const hoje = hojeISO();
+  let partidasHoje = 0, partidasPendentesHoje = 0;
+  const proximas = [];
+  ativos.forEach((t) => {
+    partidasDoTorneio(t).forEach((it) => {
+      if (it.data === hoje) { partidasHoje++; if (it.scoreA == null) partidasPendentesHoje++; }
+      if (it.scoreA == null && it.data && it.hora) proximas.push({ ...it, torneioNome: t.name, torneioId: t.id });
+    });
+  });
+  proximas.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
+  return { totalAtivos: ativos.length, totalEncerrados: encerrados.length, publicadosCount: publicados.length, inscricoesAbertasCount, partidasHoje, partidasPendentesHoje, proximas: proximas.slice(0, 5) };
+}
+
 function tipoLabelOf(tipo) {
   return tipo === 'chaves' ? 'Torneio' : tipo === 'mini' ? 'Americano + Final' : 'Torneio Americano';
 }
@@ -488,6 +521,102 @@ function renderModuloTipo(tipo, lista, isAdminView) {
   `;
 }
 
+let lobbyFiltroTipo = 'todos';
+let lobbyFiltroStatus = 'todos';
+
+function renderCentralGestao(ativos, encerrados) {
+  const stats = statsGeraisTorneios([...ativos, ...encerrados]);
+  let listaFiltrada = ativos.concat(lobbyFiltroStatus === 'encerrados' ? encerrados : []);
+  if (lobbyFiltroStatus === 'publicados') listaFiltrada = listaFiltrada.filter((t) => t.visivelPublico);
+  if (lobbyFiltroStatus === 'rascunho') listaFiltrada = listaFiltrada.filter((t) => !t.visivelPublico);
+  if (lobbyFiltroStatus === 'encerrados') listaFiltrada = encerrados;
+  if (lobbyFiltroTipo !== 'todos') listaFiltrada = listaFiltrada.filter((t) => (t.tipo || 'americano') === lobbyFiltroTipo);
+
+  return `
+    <div class="lobby-stats-grid">
+      <div class="visaogeral-item"><div class="visaogeral-num">${stats.totalAtivos}</div><div class="visaogeral-label">Torneios ativos</div></div>
+      <div class="visaogeral-item"><div class="visaogeral-num">${stats.publicadosCount}</div><div class="visaogeral-label">Publicados</div></div>
+      <div class="visaogeral-item"><div class="visaogeral-num">${stats.inscricoesAbertasCount}</div><div class="visaogeral-label">Com inscrições abertas</div></div>
+      <div class="visaogeral-item"><div class="visaogeral-num">${stats.partidasHoje}</div><div class="visaogeral-label">Partidas hoje</div></div>
+      <div class="visaogeral-item"><div class="visaogeral-num">${stats.partidasPendentesHoje}</div><div class="visaogeral-label">Pendentes hoje</div></div>
+      <div class="visaogeral-item"><div class="visaogeral-num">${stats.totalEncerrados}</div><div class="visaogeral-label">Encerrados</div></div>
+    </div>
+    <div class="lobby-grid-desktop">
+      <div>
+        <div class="lobby-filters">
+          <input id="lobby-busca" placeholder="🔍 Buscar torneio..." />
+          <select id="lobby-filtro-status" data-action="lobby-set-status">
+            <option value="todos" ${lobbyFiltroStatus === 'todos' ? 'selected' : ''}>Todos os status</option>
+            <option value="publicados" ${lobbyFiltroStatus === 'publicados' ? 'selected' : ''}>Publicados</option>
+            <option value="rascunho" ${lobbyFiltroStatus === 'rascunho' ? 'selected' : ''}>Rascunho</option>
+            <option value="encerrados" ${lobbyFiltroStatus === 'encerrados' ? 'selected' : ''}>Encerrados</option>
+          </select>
+          <select id="lobby-filtro-tipo" data-action="lobby-set-tipo">
+            <option value="todos" ${lobbyFiltroTipo === 'todos' ? 'selected' : ''}>Todas categorias</option>
+            <option value="americano" ${lobbyFiltroTipo === 'americano' ? 'selected' : ''}>Torneio Americano</option>
+            <option value="mini" ${lobbyFiltroTipo === 'mini' ? 'selected' : ''}>Americano + Final</option>
+            <option value="chaves" ${lobbyFiltroTipo === 'chaves' ? 'selected' : ''}>Torneio</option>
+          </select>
+        </div>
+        <div class="table-scroll">
+          <table class="ranking lobby-table">
+            <thead><tr><th>Torneio</th><th>Tipo</th><th>Data</th><th>Participantes</th><th>Partidas</th><th>Status</th><th>Ações</th></tr></thead>
+            <tbody>
+              ${listaFiltrada.length === 0 ? `<tr><td colspan="7" class="hint">Nenhum torneio encontrado.</td></tr>` : listaFiltrada.map((t) => {
+                const partidas = partidasDoTorneio(t);
+                const jogadas = partidas.filter((p) => p.scoreA != null).length;
+                const participantes = t.tipo === 'chaves' ? (t.teams || []).length : (t.players || []).length;
+                return `<tr class="lobby-row" data-action="abrir-torneio" data-id="${t.id}">
+                  <td>${esc(t.name || 'Torneio sem nome')}</td>
+                  <td>${esc(tipoLabelOf(t.tipo))}</td>
+                  <td>${formatDataRange(t) || '–'}</td>
+                  <td class="c">${participantes}</td>
+                  <td class="c">${jogadas}/${partidas.length}</td>
+                  <td>${t.encerrado ? '<span class="badge-pending">encerrado</span>' : (t.visivelPublico ? '<span class="badge-ok">✓ publicado</span>' : '<span class="badge-pending">rascunho</span>')}</td>
+                  <td class="lobby-acoes-cell">
+                    <button class="mode-btn" data-action="publicar-torneio" data-id="${t.id}" data-atual="${t.visivelPublico ? '1' : '0'}">${t.visivelPublico ? 'Despublicar' : 'Publicar'}</button>
+                    <button class="mode-btn" data-action="encerrar-torneio" data-id="${t.id}" data-atual="${t.encerrado ? '1' : '0'}">${t.encerrado ? 'Reabrir' : 'Encerrar'}</button>
+                    <button class="mode-btn btn-danger" data-action="remover-torneio" data-id="${t.id}" data-nome="${esc(t.name || 'este torneio')}">Remover</button>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <div class="card-head-static">+ Criar novo torneio</div>
+          <div class="card-body">
+            <div class="field"><input id="novo-torneio-nome" placeholder="Nome do torneio" /></div>
+            <div class="field">
+              <label>Tipo</label>
+              <div class="mode-row">
+                <button class="mode-btn tipo-novo-torneio active" data-action="sel-tipo-novo" data-tipo="americano">Torneio Americano</button>
+                <button class="mode-btn tipo-novo-torneio" data-action="sel-tipo-novo" data-tipo="mini">Americano + Final</button>
+                <button class="mode-btn tipo-novo-torneio" data-action="sel-tipo-novo" data-tipo="chaves">Torneio</button>
+              </div>
+            </div>
+            <button class="btn-primary" data-action="criar-torneio" data-tipo="americano">Criar e abrir</button>
+          </div>
+        </div>
+      </div>
+      <aside>
+        <div class="card">
+          <div class="card-head-static">Próximas partidas</div>
+          <div class="card-body">
+            ${stats.proximas.length === 0 ? `<div class="hint">Nenhuma partida com horário agendado.</div>` : stats.proximas.map((p) => `
+              <div class="lobby-proxima-item" data-action="abrir-torneio" data-id="${p.torneioId}">
+                <div class="lobby-proxima-hora">${formatData(p.data)} ${p.hora}</div>
+                <div class="lobby-proxima-torneio">${esc(p.torneioNome)}</div>
+                <div class="lobby-proxima-jogo">${esc(p.a)} × ${esc(p.b)}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
 function renderLobby() {
   const lista = torneiosList ? Object.entries(torneiosList).map(([id, t]) => ({ id, ...t })) : null;
   const todos = lista || [];
@@ -504,39 +633,15 @@ function renderLobby() {
         <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
       </div>
     </header>
-    <main class="hp-main">
-      <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Meus torneios' : 'Torneios em andamento'}</span></div>
+    <main class="hp-main ${isAdmin ? 'hp-main-wide' : ''}">
+      <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Central de gestão' : 'Torneios em andamento'}</span></div>
       ${lista === null ? '<div class="hint">Carregando...</div>' : ''}
-      ${lista !== null && isAdmin ? `
-        ${renderModuloTipo('americano', ativos, true)}
-        ${renderModuloTipo('mini', ativos, true)}
-        ${renderModuloTipo('chaves', ativos, true)}
-      ` : ''}
+      ${lista !== null && isAdmin ? renderCentralGestao(ativos, encerrados) : ''}
       ${lista !== null && !isAdmin ? `
         ${ativos.length === 0 ? '<div class="hint">Nenhum torneio em andamento no momento.</div>' : ''}
         ${renderModuloTipo('americano', ativos, false)}
         ${renderModuloTipo('mini', ativos, false)}
         ${renderModuloTipo('chaves', ativos, false)}
-      ` : ''}
-      ${isAdmin ? `
-      <div class="card" style="margin-top:20px">
-        <div class="card-head-static">+ Criar novo torneio</div>
-        <div class="card-body">
-          <div class="field"><input id="novo-torneio-nome" placeholder="Nome do torneio" /></div>
-          <div class="field">
-            <label>Tipo</label>
-            <div class="mode-row">
-              <button class="mode-btn tipo-novo-torneio active" data-action="sel-tipo-novo" data-tipo="americano">Torneio Americano</button>
-              <button class="mode-btn tipo-novo-torneio" data-action="sel-tipo-novo" data-tipo="mini">Americano + Final</button>
-              <button class="mode-btn tipo-novo-torneio" data-action="sel-tipo-novo" data-tipo="chaves">Torneio</button>
-            </div>
-          </div>
-          <button class="btn-primary" data-action="criar-torneio" data-tipo="americano">Criar e abrir</button>
-        </div>
-      </div>` : ''}
-      ${encerrados.length > 0 ? `
-      <div class="round-title" style="margin-top:24px"><span>Torneios encerrados (${encerrados.length})</span></div>
-      <div class="groups-wrap">${encerrados.map((t) => renderTorneioCard(t)).join('')}</div>
       ` : ''}
     </main>
     <div id="pin-modal-slot"></div>
@@ -1187,6 +1292,8 @@ function bindEvents() {
       const nome = document.getElementById('novo-torneio-nome').value.trim();
       criarNovoTorneio(nome, el.dataset.tipo);
     });
+    if (action === 'lobby-set-status') el.addEventListener('change', () => { lobbyFiltroStatus = el.value; renderLobby(); });
+    if (action === 'lobby-set-tipo') el.addEventListener('change', () => { lobbyFiltroTipo = el.value; renderLobby(); });
     if (action === 'set-tipo') el.addEventListener('click', () => setTipoHandler(el.dataset.tipo));
     if (action === 'toggle-inscricoes') el.addEventListener('click', () => persist({ ...state, inscricoesAbertas: !state.inscricoesAbertas }));
     if (action === 'toggle-visivel') el.addEventListener('click', () => persist({ ...state, visivelPublico: !state.visivelPublico }));
@@ -1277,6 +1384,14 @@ function bindEvents() {
   });
   const newCatInput = document.getElementById('new-cat');
   if (newCatInput) newCatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCategoriaHandler(); });
+  const lobbyBuscaInput = document.getElementById('lobby-busca');
+  if (lobbyBuscaInput) lobbyBuscaInput.addEventListener('input', () => {
+    const termo = lobbyBuscaInput.value.trim().toLowerCase();
+    document.querySelectorAll('.lobby-row').forEach((row) => {
+      const nome = row.children[0]?.textContent.toLowerCase() || '';
+      row.style.display = (!termo || nome.includes(termo)) ? '' : 'none';
+    });
+  });
 }
 
 function bindPinModal() {
