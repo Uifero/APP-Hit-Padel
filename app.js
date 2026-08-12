@@ -392,9 +392,9 @@ function carregarTorneioAtual() {
   });
 }
 
-async function criarNovoTorneio(nome, tipo) {
+async function criarNovoTorneio(nome, tipo, numCourts) {
   const id = uid() + uid();
-  const novo = { ...defaultState(), name: nome || 'Novo torneio', tipo: tipo || 'americano' };
+  const novo = { ...defaultState(), name: nome || 'Novo torneio', tipo: tipo || 'americano', numCourts: Math.max(1, Math.min(20, Number(numCourts) || 2)) };
   try { await set(ref(db, 'torneios/' + id), novo); } catch (e) { console.error('Falha ao criar torneio', e); }
   selecionarTorneio(id);
 }
@@ -645,7 +645,7 @@ function renderCentralGestao(ativos, encerrados) {
         <div class="card" style="margin-top:20px">
           <div class="card-head-static">+ Criar novo torneio</div>
           <div class="card-body">
-            <div class="field"><input id="novo-torneio-nome" placeholder="Nome do torneio" /></div>
+            <div class="field"><label>Nome do torneio</label><input id="novo-torneio-nome" placeholder="Ex: Torneio de Verão" /></div>
             <div class="field">
               <label>Tipo</label>
               <div class="mode-row">
@@ -654,6 +654,7 @@ function renderCentralGestao(ativos, encerrados) {
                 <button class="mode-btn tipo-novo-torneio" data-action="sel-tipo-novo" data-tipo="chaves">Torneio</button>
               </div>
             </div>
+            <div class="field"><label>Quantidade de quadras</label><input type="number" min="1" max="20" id="novo-torneio-quadras" value="2" /></div>
             <button class="btn-primary" data-action="criar-torneio" data-tipo="americano">Criar e abrir</button>
           </div>
         </div>
@@ -886,13 +887,12 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
       ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
     </div>
   </section>
-  ${naoGerouAinda ? `
   <section class="card cta-card">
     <div class="card-body">
-      <button class="btn-primary" style="width:100%" data-action="${state.tipo === 'chaves' ? 'gerar-grupos' : 'sortear'}">🔀 ${state.tipo === 'chaves' ? 'Gerar chaves' : 'Sortear rodadas'}</button>
-      <div class="hint" style="text-align:left;margin-top:6px">Cadastre as ${state.tipo === 'chaves' ? 'duplas' : 'jogadoras'} em "Inscrições" antes de sortear.</div>
+      <button class="btn-primary" style="width:100%" data-action="${state.tipo === 'chaves' ? 'gerar-grupos' : 'sortear'}">🔀 ${naoGerouAinda ? (state.tipo === 'chaves' ? 'Gerar chaves' : 'Sortear rodadas') : (state.tipo === 'chaves' ? 'Gerar chaves novamente' : 'Sortear novamente')}</button>
+      <div class="hint" style="text-align:left;margin-top:6px">${naoGerouAinda ? `Cadastre as ${state.tipo === 'chaves' ? 'duplas' : 'jogadoras'} em "Inscrições" antes de sortear.` : 'Pode sortear quantas vezes quiser — cada vez gera uma combinação nova. Isso apaga os placares já lançados.'}</div>
     </div>
-  </section>` : ''}
+  </section>
   <section class="card">
     <div class="card-head-static">📋 Painel de gestão</div>
     <div class="card-body">
@@ -949,6 +949,10 @@ function renderPainelModulo(painel, maxCourts, catPlayers, catTeams) {
 
 function renderConfigModulo() {
   return `
+    <div class="field">
+      <label>Nome do torneio</label>
+      <input id="config-nome-torneio" value="${esc(state.name)}" data-action="rename" />
+    </div>
     <div class="field">
       <label>Visibilidade pro público</label>
       <button class="mode-btn ${state.visivelPublico ? 'active' : ''}" data-action="toggle-visivel">${state.visivelPublico ? '✓ Visível (torneio postado)' : 'Oculto'}</button>
@@ -1241,17 +1245,18 @@ function collectJogos(catKey) {
   const items = [];
   if (state.tipo === 'chaves') {
     state.grupos.filter((g) => g.categoria === catKey).forEach((g) => {
-      g.matches.forEach((m) => items.push({ id: m.id, fase: g.nome, a: teamNameOf(m.teamA), b: teamNameOf(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB }));
+      g.matches.forEach((m) => items.push({ id: m.id, fase: g.nome, faseGrupo: g.nome, a: teamNameOf(m.teamA), b: teamNameOf(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB }));
     });
     (state.eliminatorias[catKey] || []).forEach((rd) => {
       rd.forEach((m) => {
         if (m.isBye) return;
-        items.push({ id: m.id, fase: roundName(rd.length), a: teamNameOf(m.teamA), b: teamNameOf(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB });
+        items.push({ id: m.id, fase: roundName(rd.length), faseGrupo: roundName(rd.length), a: teamNameOf(m.teamA), b: teamNameOf(m.teamB), scoreA: m.scoreA, scoreB: m.scoreB });
       });
     });
   } else {
     (state.rounds[catKey] || []).forEach((rd) => {
-      rd.matches.forEach((m) => items.push({ id: m.id, fase: rd.isFinal ? 'Final' : `Rodada ${rd.round}`, a: m.teamA.map(nameOf).join(' + '), b: m.teamB.map(nameOf).join(' + '), scoreA: m.scoreA, scoreB: m.scoreB, court: m.court }));
+      const faseBase = rd.isFinal ? 'Final' : `Rodada ${rd.round}`;
+      rd.matches.forEach((m) => items.push({ id: m.id, fase: `${faseBase} · ${quadraNome(state, m.court)}`, faseGrupo: faseBase, a: m.teamA.map(nameOf).join(' + '), b: m.teamB.map(nameOf).join(' + '), scoreA: m.scoreA, scoreB: m.scoreB, court: m.court }));
     });
   }
   return items.map((it) => {
@@ -1377,7 +1382,8 @@ function bindEvents() {
     });
     if (action === 'criar-torneio') el.addEventListener('click', () => {
       const nome = document.getElementById('novo-torneio-nome').value.trim();
-      criarNovoTorneio(nome, el.dataset.tipo);
+      const quadras = document.getElementById('novo-torneio-quadras')?.value;
+      criarNovoTorneio(nome, el.dataset.tipo, quadras);
     });
     if (action === 'lobby-set-status') el.addEventListener('change', () => { lobbyFiltroStatus = el.value; renderLobby(); });
     if (action === 'lobby-set-tipo') el.addEventListener('change', () => { lobbyFiltroTipo = el.value; renderLobby(); });
@@ -1709,8 +1715,9 @@ function gerarHorariosHandler(catKey) {
   const faseOrder = [];
   const byFase = {};
   items.forEach((it) => {
-    if (!byFase[it.fase]) { byFase[it.fase] = []; faseOrder.push(it.fase); }
-    byFase[it.fase].push(it);
+    const chave = it.faseGrupo || it.fase;
+    if (!byFase[chave]) { byFase[chave] = []; faseOrder.push(chave); }
+    byFase[chave].push(it);
   });
   const [h, m] = horaInput.split(':').map(Number);
   let cursorMin = h * 60 + m;
