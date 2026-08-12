@@ -660,13 +660,13 @@ function renderCentralGestao(ativos, encerrados) {
                 const jogadas = partidas.filter((p) => partidaJogada(p)).length;
                 const participantes = t.tipo === 'chaves' ? (t.teams || []).length : (t.players || []).length;
                 return `<tr class="lobby-row" data-action="abrir-torneio" data-id="${t.id}">
-                  <td>${esc(t.name || 'Torneio sem nome')}<div class="lobby-criado-em">${formatDataHora(t.criadoEm)}</div></td>
-                  <td>${esc(tipoLabelOf(t.tipo))}</td>
-                  <td>${formatDataRange(t) || '–'}</td>
-                  <td class="c">${participantes}</td>
-                  <td class="c">${jogadas}/${partidas.length}</td>
-                  <td>${t.encerrado ? '<span class="badge-pending">encerrado</span>' : (t.visivelPublico ? '<span class="badge-ok">✓ publicado</span>' : '<span class="badge-pending">rascunho</span>')}</td>
-                  <td class="lobby-acoes-cell">
+                  <td data-label="Torneio">${esc(t.name || 'Torneio sem nome')}<div class="lobby-criado-em">${formatDataHora(t.criadoEm)}</div></td>
+                  <td data-label="Tipo">${esc(tipoLabelOf(t.tipo))}</td>
+                  <td data-label="Data">${formatDataRange(t) || '–'}</td>
+                  <td data-label="Participantes" class="c">${participantes}</td>
+                  <td data-label="Partidas" class="c">${jogadas}/${partidas.length}</td>
+                  <td data-label="Status">${t.encerrado ? '<span class="badge-pending">encerrado</span>' : (t.visivelPublico ? '<span class="badge-ok">✓ publicado</span>' : '<span class="badge-pending">rascunho</span>')}</td>
+                  <td data-label="Ações" class="lobby-acoes-cell">
                     <button class="mode-btn" data-action="publicar-torneio" data-id="${t.id}" data-atual="${t.visivelPublico ? '1' : '0'}">${t.visivelPublico ? 'Despublicar' : 'Publicar'}</button>
                     <button class="mode-btn" data-action="encerrar-torneio" data-id="${t.id}" data-atual="${t.encerrado ? '1' : '0'}">${t.encerrado ? 'Reabrir' : 'Encerrar'}</button>
                     <button class="mode-btn btn-danger" data-action="remover-torneio" data-id="${t.id}" data-nome="${esc(t.name || 'este torneio')}">Remover</button>
@@ -952,7 +952,7 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
           <div class="dash-sub">${totalConfirmadas} confirmada(s)</div>
         </button>
         <button class="dash-card" data-action="abrir-painel" data-painel="chaveamento">
-          <div class="dash-title">Chaveamento</div>
+          <div class="dash-title">${state.tipo === 'chaves' ? 'Chaveamento' : 'Sorteio de Rodadas'}</div>
           <div class="dash-sub">${state.tipo === 'chaves' ? `${gruposGerados} chave(s)` : `${rodadasGeradas} rodada(s)`}</div>
         </button>
         <button class="dash-card" data-action="abrir-painel" data-painel="aovivo">
@@ -970,7 +970,7 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
 
 function renderPainelModulo(painel, maxCourts, catPlayers, catTeams) {
   const minRounds = minRoundsForFullCoverage(catPlayers.length, Math.min(state.numCourts, maxCourts));
-  const titulos = { config: 'Configurações', quadras: 'Quadras e Rodadas', inscricoes: 'Inscrições', duplas: 'Duplas', chaveamento: 'Chaveamento', aovivo: 'Ao Vivo' };
+  const titulos = { config: 'Configurações', quadras: 'Quadras e Rodadas', inscricoes: 'Inscrições', duplas: state.tipo === 'chaves' ? 'Duplas' : 'Jogadoras', chaveamento: state.tipo === 'chaves' ? 'Chaveamento' : 'Sorteio de Rodadas', aovivo: 'Ao Vivo' };
   let content = '';
   if (painel === 'config') content = renderConfigModulo();
   else if (painel === 'quadras') content = renderQuadrasModulo(maxCourts, minRounds, catPlayers.length);
