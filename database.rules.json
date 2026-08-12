@@ -4,6 +4,10 @@
       ".read": true,
       ".write": true
     },
+    "atletas": {
+      ".read": true,
+      ".write": true
+    },
     "tournament": {
       ".read": true,
       ".write": false
