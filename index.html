@@ -126,6 +126,8 @@
   .badge-pending{font-size:11px;opacity:.6;margin-left:4px;}
   .search-field{margin:14px 0;}
   .search-field input{width:100%;}
+  .search-field-destaque{border:1px solid var(--orange);border-radius:12px;padding:12px;background:var(--navy-deep);}
+  .search-field-destaque label{display:block;font-size:13px;margin-bottom:6px;color:var(--yellow);font-weight:600;}
   .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}
   .row input{flex:1;min-width:120px;}
   .row select{min-width:0;flex-shrink:1;}
@@ -155,6 +157,10 @@
   .team-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .score{font-family:'Bebas Neue',sans-serif;font-size:22px;width:32px;text-align:center;}
   .score-input{width:56px;text-align:center;padding:5px;border-radius:8px;background:var(--navy-deep);border:1px solid var(--line);color:var(--chalk);}
+  .score-stepper{display:flex;align-items:center;gap:6px;}
+  .score-btn{width:34px;height:34px;border-radius:8px;border:1px solid var(--line);background:var(--navy-deep);color:var(--chalk);font-size:18px;line-height:1;cursor:pointer;flex-shrink:0;}
+  .score-btn:active{background:var(--orange);color:var(--navy-deep);}
+  .score-stepper .score-input{width:44px;}
   input[type=number]::-webkit-outer-spin-button, input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
   input[type=number]{-moz-appearance:textfield;}
   .vs{text-align:center;font-size:10px;opacity:.4;margin:2px 0;}
