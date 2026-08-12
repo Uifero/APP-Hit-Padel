@@ -301,6 +301,21 @@ let selectedCategoria = null;
 let jogosFiltroData = 'todas';
 let pubSignupFlash = null;
 let currentTournamentId = null;
+let avisoDemoraMostrado = false;
+let timerAvisoDemora = null;
+function agendarAvisoSeDemorar() {
+  if (timerAvisoDemora || avisoDemoraMostrado) return;
+  timerAvisoDemora = setTimeout(() => {
+    avisoDemoraMostrado = true;
+    timerAvisoDemora = null;
+    render();
+  }, 4000);
+}
+function cancelarAvisoDemora() {
+  if (timerAvisoDemora) { clearTimeout(timerAvisoDemora); timerAvisoDemora = null; }
+  avisoDemoraMostrado = false;
+}
+const AVISO_DEMORA_HTML = '<div class="hint" style="margin-top:10px">Isso está demorando mais que o normal — geralmente é a conexão do aparelho. Continue aguardando ou tente recarregar a página.</div>';
 let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
 let unsubscribeTournament = null;
@@ -499,7 +514,12 @@ function renderProximaPartidaPublica(catKey) {
 
 function render() {
   if (!currentTournamentId) { renderLobby(); return; }
-  if (!state) { root.innerHTML = '<div class="loading">Carregando quadra...</div>'; return; }
+  if (!state) {
+    agendarAvisoSeDemorar();
+    root.innerHTML = `<div class="loading">Carregando quadra...${avisoDemoraMostrado ? AVISO_DEMORA_HTML : ''}</div>`;
+    return;
+  }
+  cancelarAvisoDemora();
   const isChaves = state.tipo === 'chaves';
   const catKeys = categoriaKeys(state);
   const catKey = currentCategoria();
@@ -713,6 +733,7 @@ function renderCentralGestao(ativos, encerrados) {
 
 function renderLobby() {
   const lista = torneiosList ? Object.entries(torneiosList).map(([id, t]) => ({ id, ...t })) : null;
+  if (lista !== null) cancelarAvisoDemora();
   const todos = lista || [];
   const visiveis = isAdmin ? todos : todos.filter((t) => t.visivelPublico);
   const ativos = visiveis.filter((t) => !t.encerrado);
@@ -729,7 +750,7 @@ function renderLobby() {
     </header>
     <main class="hp-main ${isAdmin ? 'hp-main-wide' : ''}">
       <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Central de gestão' : 'Torneios em andamento'}</span></div>
-      ${lista === null ? '<div class="hint">Carregando...</div>' : ''}
+      ${lista === null ? (agendarAvisoSeDemorar(), `<div class="hint">Carregando...${avisoDemoraMostrado ? AVISO_DEMORA_HTML : ''}</div>`) : ''}
       ${lista !== null && isAdmin ? renderCentralGestao(ativos, encerrados) : ''}
       ${lista !== null && !isAdmin ? `
         ${ativos.length === 0 ? '<div class="hint">Nenhum torneio em andamento no momento.</div>' : ''}
