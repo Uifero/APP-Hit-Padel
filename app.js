@@ -394,7 +394,7 @@ function carregarTorneioAtual() {
 
 async function criarNovoTorneio(nome, tipo, numCourts) {
   const id = uid() + uid();
-  const novo = { ...defaultState(), name: nome || 'Novo torneio', tipo: tipo || 'americano', numCourts: Math.max(1, Math.min(20, Number(numCourts) || 2)) };
+  const novo = { ...defaultState(), name: nome || 'Novo torneio', tipo: tipo || 'americano', numCourts: Math.max(1, Math.min(20, Number(numCourts) || 2)), criadoEm: Date.now() };
   try { await set(ref(db, 'torneios/' + id), novo); } catch (e) { console.error('Falha ao criar torneio', e); }
   selecionarTorneio(id);
 }
@@ -454,6 +454,15 @@ function formatDataRange(state) {
   if (!state.dataInicio && !state.dataFim) return '';
   if (state.dataInicio && state.dataFim && state.dataInicio !== state.dataFim) return `📅 ${formatData(state.dataInicio)} a ${formatData(state.dataFim)}`;
   return `📅 ${formatData(state.dataInicio || state.dataFim)}`;
+}
+function formatDataHora(timestamp) {
+  if (!timestamp) return '';
+  const d = new Date(timestamp);
+  const dia = String(d.getDate()).padStart(2, '0');
+  const mes = String(d.getMonth() + 1).padStart(2, '0');
+  const hora = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `Criado em ${dia}/${mes} às ${hora}:${min}`;
 }
 
 function renderProximaPartidaPublica(catKey) {
@@ -572,7 +581,7 @@ function renderTorneioCard(t) {
 }
 
 function renderModuloTipo(tipo, lista, isAdminView) {
-  const dessteTipo = lista.filter((t) => (t.tipo || 'americano') === tipo);
+  const dessteTipo = lista.filter((t) => (t.tipo || 'americano') === tipo).sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
   if (!isAdminView && dessteTipo.length === 0) return '';
   return `
     <div class="round-title" style="margin-top:20px"><span>${tipoLabelOf(tipo)} (${dessteTipo.length})</span></div>
@@ -590,6 +599,7 @@ function renderCentralGestao(ativos, encerrados) {
   if (lobbyFiltroStatus === 'rascunho') listaFiltrada = listaFiltrada.filter((t) => !t.visivelPublico);
   if (lobbyFiltroStatus === 'encerrados') listaFiltrada = encerrados;
   if (lobbyFiltroTipo !== 'todos') listaFiltrada = listaFiltrada.filter((t) => (t.tipo || 'americano') === lobbyFiltroTipo);
+  listaFiltrada = [...listaFiltrada].sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
 
   return `
     <div class="lobby-stats-grid">
@@ -626,7 +636,7 @@ function renderCentralGestao(ativos, encerrados) {
                 const jogadas = partidas.filter((p) => partidaJogada(p)).length;
                 const participantes = t.tipo === 'chaves' ? (t.teams || []).length : (t.players || []).length;
                 return `<tr class="lobby-row" data-action="abrir-torneio" data-id="${t.id}">
-                  <td>${esc(t.name || 'Torneio sem nome')}</td>
+                  <td>${esc(t.name || 'Torneio sem nome')}<div class="lobby-criado-em">${formatDataHora(t.criadoEm)}</div></td>
                   <td>${esc(tipoLabelOf(t.tipo))}</td>
                   <td>${formatDataRange(t) || '–'}</td>
                   <td class="c">${participantes}</td>
@@ -993,6 +1003,7 @@ function renderConfigModulo() {
 function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
   const cortesReais = Math.min(state.numCourts, maxCourts);
   const justa = state.tipo !== 'chaves' && numJogadoras >= 4 ? distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds) : true;
+  const numeroImpar = numJogadoras % 2 === 1;
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
@@ -1000,13 +1011,15 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
     </div>
     ${state.tipo !== 'chaves' && numJogadoras >= 4 ? `
       <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:-8px;margin-bottom:10px">
-        ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas. Números que funcionam: ${proximosRoundsValidos(numJogadoras, cortesReais).join(', ')}.`}
+        ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas.${numeroImpar ? ' Com número ímpar de jogadoras, use o campo "jogos por jogadora" abaixo, que calcula um número de rodadas que funciona automaticamente.' : ` Números que funcionam: ${proximosRoundsValidos(numJogadoras, cortesReais).join(', ')}.`}`}
       </div>
     ` : ''}
-    ${state.tipo !== 'chaves' && minRounds > 0 ? `
+    ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 ? (numeroImpar ? `
+      <div class="hint" style="text-align:left;margin-top:4px">Com número ímpar de jogadoras, "todos contra todos" não é uma opção prática (exigiria rodadas demais). Use o campo "jogos por jogadora" abaixo.</div>
+    ` : `
       <button class="mode-btn" data-action="usar-cobertura-total" data-min="${minRounds}">Preencher com ~${minRounds} rodadas (todos jogam com todos)</button>
       <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), seriam necessárias ~${minRounds} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez.</div>
-    ` : ''}
+    `) : ''}
     ${state.tipo !== 'chaves' ? `
       <div class="field" style="margin-top:10px">
         <label>Ou escolha quantos jogos cada jogadora deve jogar</label>
@@ -1665,9 +1678,12 @@ function sortearHandler() {
     const maxCourts = Math.max(1, Math.floor(catPlayers.length / 4));
     const courtsReais = Math.min(state.numCourts, maxCourts);
     if (!distribuicaoEhJusta(catPlayers.length, courtsReais, state.numRounds)) {
-      const validos = proximosRoundsValidos(catPlayers.length, courtsReais);
       const catLabelTxt = catKey === DEFAULT_CAT ? '' : ` na categoria "${catLabel(catKey)}"`;
-      alert(`Com ${catPlayers.length} jogadoras${catLabelTxt} e ${courtsReais} quadra(s), ${state.numRounds} rodada(s) NÃO permite que todas joguem exatamente a mesma quantidade de jogos — alguém jogaria a mais e alguém a menos.\n\nRodadas que resultam em jogos 100% iguais pra todas: ${validos.join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`);
+      const numeroImpar = catPlayers.length % 2 === 1;
+      const sugestao = numeroImpar
+        ? 'Com número ímpar de jogadoras, não dá pra sortear direto com esse número de rodadas. Use o campo "quantos jogos cada jogadora deve jogar" (em Quadras e Rodadas) — ele calcula e preenche um número de rodadas que funciona automaticamente.'
+        : `Rodadas que resultam em jogos 100% iguais pra todas: ${proximosRoundsValidos(catPlayers.length, courtsReais).join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`;
+      alert(`Com ${catPlayers.length} jogadoras${catLabelTxt} e ${courtsReais} quadra(s), ${state.numRounds} rodada(s) NÃO permite que todas joguem exatamente a mesma quantidade de jogos — alguém jogaria a mais e alguém a menos.\n\n${sugestao}`);
       return;
     }
   }
