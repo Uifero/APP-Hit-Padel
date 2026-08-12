@@ -417,6 +417,18 @@ function formatDataRange(state) {
   return `📅 ${formatData(state.dataInicio || state.dataFim)}`;
 }
 
+function renderProximaPartidaPublica(catKey) {
+  const resumo = resumoVisaoGeral(catKey);
+  if (!resumo.proxima) return '';
+  return `
+    <div class="proxima-banner">
+      <div class="proxima-banner-label">📅 Próxima partida</div>
+      <div class="proxima-banner-info">${formatData(resumo.proxima.data)} às ${esc(resumo.proxima.hora)}</div>
+      <div class="proxima-banner-jogo">${esc(resumo.proxima.a)} <span class="vs-inline">×</span> ${esc(resumo.proxima.b)}</div>
+    </div>
+  `;
+}
+
 function render() {
   if (!currentTournamentId) { renderLobby(); return; }
   if (!state) { root.innerHTML = '<div class="loading">Carregando quadra...</div>'; return; }
@@ -454,6 +466,7 @@ function render() {
     <main class="hp-main">
       ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams) : ''}
       ${ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
+      ${!isAdmin ? renderProximaPartidaPublica(catKey) : ''}
       ${catKeys.length > 1 ? renderCategoriaTabs(catKeys, catKey) : ''}
       ${renderInscricaoPublica()}
       ${!isAdmin ? renderInscritosPublico(catKey) : ''}
@@ -999,7 +1012,7 @@ function renderPlayersSetup(minRounds) {
     <div class="field">
       <label>Jogadoras (${state.players.length})</label>
       <div class="chips">
-        ${state.players.map((p) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} <button class="conf-badge ${p.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-player" data-id="${p.id}" title="${p.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${p.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}">×</button></span>`).join('')}
+        ${state.players.map((p) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} <button class="conf-badge ${p.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-player" data-id="${p.id}" title="${p.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${p.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}" data-nome="${esc(p.name)}">×</button></span>`).join('')}
       </div>
       <div class="row">
         <input id="new-player" placeholder="Nome da jogadora" />
@@ -1023,7 +1036,7 @@ function renderTeamsSetup() {
         ${state.teams.map((t) => {
           const tel1 = t.telefone1 || t.telefone || '';
           const tel2 = t.telefone2 || '';
-          return `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''} <button class="conf-badge ${t.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-team" data-id="${t.id}" title="${t.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${t.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}">×</button></span>`;
+          return `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''} <button class="conf-badge ${t.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-team" data-id="${t.id}" title="${t.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${t.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}" data-nome="${esc(t.name)}">×</button></span>`;
         }).join('')}
       </div>
       <div class="row2">
@@ -1086,14 +1099,10 @@ function hasEmpate(list, keyFn) {
 }
 function renderRanking(stats) {
   if (!stats.length) return `<div class="card-body hint">Nenhum resultado lançado ainda.</div>`;
-  const empatou = hasEmpate(stats, (s) => `${s.pontos}|${s.vitorias}`);
-  return `<div class="table-scroll"><table class="ranking"><thead><tr><th>#</th><th>Jogadora</th><th>J</th><th>V</th><th>SS</th><th>SG</th><th>Pts</th></tr></thead><tbody>
-    ${stats.map((s, i) => {
-      const ss = s.vitorias - s.derrotas;
-      return `<tr><td class="${i < 3 ? 'top' : ''}">${i + 1}</td><td>${esc(s.name)}</td><td class="c">${s.partidas}</td><td class="c">${s.vitorias}</td><td class="c">${ss > 0 ? '+' + ss : ss}</td><td class="c">${s.saldo > 0 ? '+' + s.saldo : s.saldo}</td><td class="pts">${s.pontos}</td></tr>`;
-    }).join('')}
+  return `<div class="table-scroll"><table class="ranking"><thead><tr><th>#</th><th>Jogadora</th><th>J</th><th>V</th><th>Pts</th></tr></thead><tbody>
+    ${stats.map((s, i) => `<tr><td class="${i < 3 ? 'top' : ''}">${i + 1}</td><td>${esc(s.name)}</td><td class="c">${s.partidas}</td><td class="c">${s.vitorias}</td><td class="pts">${s.pontos}</td></tr>`).join('')}
   </tbody></table></div>
-  ${empatou ? `<div class="hint" style="margin-top:8px">Houve empate em pontos/vitórias — desempate aplicado: pontos → vitórias → confronto direto.</div>` : ''}`;
+  <div class="hint" style="text-align:left;margin-top:8px">Critério de desempate: pontuação total → vitórias → confronto direto.</div>`;
 }
 
 // ---------- grupos + eliminatória (Chaves) ----------
@@ -1127,6 +1136,7 @@ function renderGroupCard(g) {
       }).join('')}</tbody>
     </table>
     </div>
+    ${!isAdmin ? `<div class="hint" style="text-align:left;margin-bottom:4px">V = vitórias · Saldo Sets = vitórias menos derrotas · Saldo Games = diferença de pontos</div>` : ''}
     ${empatou ? `<div class="hint" style="margin-bottom:8px">Houve empate em vitórias/saldo — desempate aplicado: vitórias → saldo de sets → confronto direto.</div>` : ''}
     <div class="matches">${g.matches.map((m) => renderGroupMatch(m)).join('')}</div>
   </div>`;
@@ -1326,13 +1336,21 @@ function bindEvents() {
     if (action === 'add-cat') el.addEventListener('click', addCategoriaHandler);
     if (action === 'add-cat-sugg') el.addEventListener('click', () => addCategoria(el.dataset.cat));
     if (action === 'remove-cat') el.addEventListener('click', () => removeCategoriaHandler(el.dataset.cat));
-    if (action === 'remove-player') el.addEventListener('click', () => persist({ ...state, players: state.players.filter((p) => p.id !== el.dataset.id) }));
+    if (action === 'remove-player') el.addEventListener('click', () => {
+      const nome = el.dataset.nome || 'esta jogadora';
+      if (!confirm(`Remover "${nome}" do torneio? Essa ação não pode ser desfeita.`)) return;
+      persist({ ...state, players: state.players.filter((p) => p.id !== el.dataset.id) });
+    });
     if (action === 'toggle-confirm-player') el.addEventListener('click', () => toggleConfirmHandler('players', el.dataset.id));
     if (action === 'toggle-confirm-team') el.addEventListener('click', () => toggleConfirmHandler('teams', el.dataset.id));
     if (action === 'toggle-oculto-player') el.addEventListener('click', () => toggleOcultoHandler('players', el.dataset.id));
     if (action === 'toggle-oculto-team') el.addEventListener('click', () => toggleOcultoHandler('teams', el.dataset.id));
     if (action === 'add-player') el.addEventListener('click', addPlayerHandler);
-    if (action === 'remove-team') el.addEventListener('click', () => persist({ ...state, teams: state.teams.filter((t) => t.id !== el.dataset.id) }));
+    if (action === 'remove-team') el.addEventListener('click', () => {
+      const nome = el.dataset.nome || 'esta dupla';
+      if (!confirm(`Remover "${nome}" do torneio? Essa ação não pode ser desfeita.`)) return;
+      persist({ ...state, teams: state.teams.filter((t) => t.id !== el.dataset.id) });
+    });
     if (action === 'add-team') el.addEventListener('click', addTeamHandler);
     if (action === 'toggle-sem-parceiro-admin') el.addEventListener('change', () => {
       document.getElementById('new-team-parceiro-wrap').style.display = el.checked ? 'none' : '';
