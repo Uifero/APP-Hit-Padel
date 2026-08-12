@@ -1,7 +1,7 @@
 import { firebaseConfig } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getDatabase, ref, onValue, set, get } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
-import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
@@ -13,6 +13,13 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 const pairKey = (a, b) => [a, b].sort().join('~');
 const DEFAULT_CAT = '_default';
 const CATEGORIA_SUGESTOES = ['Cat Iniciante', '7ª Cat', '6ª Cat', '5ª Cat', '4ª Cat', 'Soma 9', 'Soma 11', 'Soma 13', 'Masculina', 'Feminina', 'Mista'];
+// Quantas jogadoras realmente entram em quadra numa rodada: limitado pela capacidade das quadras
+// (4 por quadra) E arredondado pra baixo até múltiplo de 4, porque não dá pra formar um jogo com
+// menos de 4 pessoas — a sobra vira folga também, mesmo quando "cabe" fisicamente na quadra.
+function ativosPorRodadaReal(numPlayers, numCourts) {
+  const cap = Math.min(numPlayers, numCourts * 4);
+  return cap - (cap % 4);
+}
 // Uma partida só conta como "jogada" quando os dois placares existem e pelo menos um é maior que 0.
 // 0x0 ou campos vazios ficam como pendente (permite salvar um "reset" do placar sem contar como resultado real).
 function partidaJogada(m) {
@@ -64,21 +71,26 @@ function bestPairing(four, history) {
 function generateSchedule(players, numCourts, numRounds) {
   const history = { partner: {}, opponent: {} };
   const n = players.length;
-  const perRound = numCourts * 4;
+  const ativosPorRodada = ativosPorRodadaReal(n, numCourts);
   const rounds = [];
   let cursor = 0;
   for (let r = 0; r < numRounds; r++) {
-    const numBye = Math.max(0, n - perRound);
+    const numBye = Math.max(0, n - ativosPorRodada);
     let byeIds = [];
     if (numBye > 0) { for (let i = 0; i < numBye; i++) byeIds.push(players[(cursor + i) % n].id); cursor = (cursor + numBye) % n; }
     const active = players.filter((p) => !byeIds.includes(p.id));
     let bestGroups = null, bestScore = Infinity;
-    for (let attempt = 0; attempt < 180; attempt++) {
-      const shuffled = [...active].sort(() => Math.random() - 0.5);
-      const groups = [];
-      for (let i = 0; i + 3 < shuffled.length; i += 4) groups.push(bestPairing(shuffled.slice(i, i + 4).map((p) => p.id), history));
-      const s = groups.reduce((acc, g) => acc + scoreGroup(g, history), 0);
-      if (s < bestScore) { bestScore = s; bestGroups = groups; }
+    let tentativas = 400;
+    for (let onda = 0; onda < 3 && bestScore > 0; onda++) {
+      for (let attempt = 0; attempt < tentativas; attempt++) {
+        const shuffled = [...active].sort(() => Math.random() - 0.5);
+        const groups = [];
+        for (let i = 0; i + 3 < shuffled.length; i += 4) groups.push(bestPairing(shuffled.slice(i, i + 4).map((p) => p.id), history));
+        const s = groups.reduce((acc, g) => acc + scoreGroup(g, history), 0);
+        if (s < bestScore) { bestScore = s; bestGroups = groups; }
+        if (bestScore === 0) break;
+      }
+      tentativas *= 3;
     }
     if (!bestGroups) bestGroups = [];
     bestGroups.forEach((g) => {
@@ -131,6 +143,33 @@ function minRoundsForFullCoverage(numPlayers, numCourts) {
   if (numPlayers < 4) return 0;
   const totalPairs = (numPlayers * (numPlayers - 1)) / 2;
   return Math.ceil(totalPairs / (numCourts * 2));
+}
+function minRoundsForGamesPerPlayer(numPlayers, numCourts, jogosDesejados) {
+  if (numPlayers < 4 || jogosDesejados < 1) return 0;
+  const ativosPorRodada = ativosPorRodadaReal(numPlayers, numCourts);
+  if (ativosPorRodada === 0) return 0;
+  return Math.ceil((jogosDesejados * numPlayers) / ativosPorRodada);
+}
+// Verdadeiro só quando dá pra distribuir os jogos exatamente igual entre todas as jogadoras
+// (ninguém joga a mais, ninguém joga a menos, ninguém fica de fora).
+function distribuicaoEhJusta(numPlayers, numCourts, numRounds) {
+  if (numPlayers < 4 || numRounds < 1) return false;
+  const ativosPorRodada = ativosPorRodadaReal(numPlayers, numCourts);
+  if (ativosPorRodada === 0) return false;
+  return (numRounds * ativosPorRodada) % numPlayers === 0;
+}
+function proximosRoundsValidos(numPlayers, numCourts, quantidade = 6, maxRounds = 30) {
+  const validos = [];
+  for (let n = 1; n <= maxRounds && validos.length < quantidade; n++) {
+    if (distribuicaoEhJusta(numPlayers, numCourts, n)) validos.push(n);
+  }
+  return validos;
+}
+function proximoRoundsValidoApartirDe(numPlayers, numCourts, minimo, maxRounds = 30) {
+  for (let n = Math.max(1, minimo); n <= maxRounds; n++) {
+    if (distribuicaoEhJusta(numPlayers, numCourts, n)) return n;
+  }
+  return minimo;
 }
 function roundsWithoutScores(rounds) { return rounds.some((rd) => rd.matches.some((m) => !partidaJogada(m))); }
 function generateFinalRound(players, rounds) {
@@ -896,7 +935,7 @@ function renderPainelModulo(painel, maxCourts, catPlayers, catTeams) {
   const titulos = { config: 'Configurações', quadras: 'Quadras e Rodadas', inscricoes: 'Inscrições', duplas: 'Duplas', chaveamento: 'Chaveamento', aovivo: 'Ao Vivo' };
   let content = '';
   if (painel === 'config') content = renderConfigModulo();
-  else if (painel === 'quadras') content = renderQuadrasModulo(maxCourts, minRounds);
+  else if (painel === 'quadras') content = renderQuadrasModulo(maxCourts, minRounds, catPlayers.length);
   else if (painel === 'inscricoes') content = state.tipo === 'chaves' ? renderTeamsSetup() : renderPlayersSetup(minRounds);
   else if (painel === 'duplas') content = renderDuplasModulo(catTeams, catPlayers);
   else if (painel === 'chaveamento') content = renderChaveamentoModulo();
@@ -947,15 +986,32 @@ function renderConfigModulo() {
   `;
 }
 
-function renderQuadrasModulo(maxCourts, minRounds) {
+function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
+  const cortesReais = Math.min(state.numCourts, maxCourts);
+  const justa = state.tipo !== 'chaves' && numJogadoras >= 4 ? distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds) : true;
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
       <div class="field"><label>Rodadas</label><input type="number" min="1" max="30" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
     </div>
+    ${state.tipo !== 'chaves' && numJogadoras >= 4 ? `
+      <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:-8px;margin-bottom:10px">
+        ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas. Números que funcionam: ${proximosRoundsValidos(numJogadoras, cortesReais).join(', ')}.`}
+      </div>
+    ` : ''}
     ${state.tipo !== 'chaves' && minRounds > 0 ? `
       <button class="mode-btn" data-action="usar-cobertura-total" data-min="${minRounds}">Preencher com ~${minRounds} rodadas (todos jogam com todos)</button>
       <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), seriam necessárias ~${minRounds} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez.</div>
+    ` : ''}
+    ${state.tipo !== 'chaves' ? `
+      <div class="field" style="margin-top:10px">
+        <label>Ou escolha quantos jogos cada jogadora deve jogar</label>
+        <div class="row">
+          <input type="number" min="1" id="jogos-por-jogadora" placeholder="Ex: 4 ou 5" />
+          <button data-action="calcular-rodadas-por-jogos">Calcular e preencher rodadas</button>
+        </div>
+        <div class="hint" style="text-align:left;margin-top:4px" id="jogos-por-jogadora-resultado"></div>
+      </div>
     ` : ''}
     <div class="field">
       <label>Nome das quadras</label>
@@ -1275,6 +1331,7 @@ function renderPinModal() {
       <input id="login-pass" type="password" placeholder="Senha" />
       <button type="button" class="toggle-pass" data-action="toggle-pass" title="Mostrar senha">👁</button>
     </div>
+    <label class="checkbox-row"><input type="checkbox" id="login-manter-conectado" checked /> Manter conectado neste dispositivo</label>
     <div id="pin-error" class="pin-error"></div>
     <div class="modal-actions"><button data-action="close-pin">Cancelar</button><button class="btn-primary" data-action="try-unlock">Entrar</button></div>
   </div></div>`;
@@ -1369,7 +1426,24 @@ function bindEvents() {
       persist({ ...state, nomesQuadras: nomes });
     });
     if (action === 'set-rounds') el.addEventListener('change', () => persist({ ...state, numRounds: Math.max(1, Math.min(30, Number(el.value) || 1)) }));
-    if (action === 'usar-cobertura-total') el.addEventListener('click', () => persist({ ...state, numRounds: Math.min(30, Number(el.dataset.min)) }));
+    if (action === 'usar-cobertura-total') el.addEventListener('click', () => {
+      const catKey = currentCategoria();
+      const numJogadoras = state.players.filter((p) => categoriaOf(p) === catKey).length;
+      const minimo = Number(el.dataset.min);
+      const rodadas = proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
+      persist({ ...state, numRounds: Math.min(30, rodadas) });
+    });
+    if (action === 'calcular-rodadas-por-jogos') el.addEventListener('click', () => {
+      const desejado = Number(document.getElementById('jogos-por-jogadora').value);
+      const resultadoEl = document.getElementById('jogos-por-jogadora-resultado');
+      if (!desejado || desejado < 1) { if (resultadoEl) resultadoEl.textContent = 'Digite quantos jogos por jogadora primeiro.'; return; }
+      const catKey = currentCategoria();
+      const numJogadoras = state.players.filter((p) => categoriaOf(p) === catKey).length;
+      const minimo = minRoundsForGamesPerPlayer(numJogadoras, state.numCourts, desejado);
+      if (minimo === 0) { if (resultadoEl) resultadoEl.textContent = 'Cadastre pelo menos 4 jogadoras na categoria atual primeiro.'; return; }
+      const rodadas = proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
+      persist({ ...state, numRounds: Math.min(30, rodadas) });
+    });
     if (action === 'set-hora-inicio-torneio') el.addEventListener('change', () => persist({ ...state, horaInicioTorneio: el.value }));
     if (action === 'set-duracao-jogo-min') el.addEventListener('change', () => persist({ ...state, duracaoJogoMin: Math.max(1, Number(el.value) || 40) }));
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
@@ -1453,10 +1527,12 @@ function bindPinModal() {
 function closePinModal() { document.getElementById('pin-modal-slot').innerHTML = ''; }
 async function tryUnlock() {
   const user = document.getElementById('login-user').value.trim();
-  const pass = document.getElementById('login-pass').value;
+  const pass = document.getElementById('login-pass').value.toLowerCase();
+  const manterConectado = document.getElementById('login-manter-conectado')?.checked;
   const btn = document.querySelector('[data-action="try-unlock"]');
   if (btn) btn.textContent = 'Entrando...';
   try {
+    await setPersistence(auth, manterConectado ? browserLocalPersistence : browserSessionPersistence);
     await signInWithEmailAndPassword(auth, user.toLowerCase() + ADMIN_EMAIL_DOMAIN, pass);
     closePinModal();
   } catch (e) {
@@ -1577,6 +1653,18 @@ function agendamentosAutoParaGrupos(novosGrupos, dataInput, horaInput, duracao, 
   return agendamentos;
 }
 function sortearHandler() {
+  for (const catKey of categoriaKeys(state)) {
+    const catPlayers = state.players.filter((p) => categoriaOf(p) === catKey);
+    if (catPlayers.length < 4) continue;
+    const maxCourts = Math.max(1, Math.floor(catPlayers.length / 4));
+    const courtsReais = Math.min(state.numCourts, maxCourts);
+    if (!distribuicaoEhJusta(catPlayers.length, courtsReais, state.numRounds)) {
+      const validos = proximosRoundsValidos(catPlayers.length, courtsReais);
+      const catLabelTxt = catKey === DEFAULT_CAT ? '' : ` na categoria "${catLabel(catKey)}"`;
+      alert(`Com ${catPlayers.length} jogadoras${catLabelTxt} e ${courtsReais} quadra(s), ${state.numRounds} rodada(s) NÃO permite que todas joguem exatamente a mesma quantidade de jogos — alguém jogaria a mais e alguém a menos.\n\nRodadas que resultam em jogos 100% iguais pra todas: ${validos.join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`);
+      return;
+    }
+  }
   const newRounds = { ...state.rounds };
   let algumaGerada = false;
   categoriaKeys(state).forEach((catKey) => {
