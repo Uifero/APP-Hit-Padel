@@ -317,7 +317,7 @@ function cancelarAvisoDemora() {
 }
 const AVISO_DEMORA_HTML = '<div class="hint" style="margin-top:10px">Isso está demorando mais que o normal — geralmente é a conexão do aparelho. Continue aguardando ou tente recarregar a página.</div>';
 let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
-let rodadasEstadoColapso = {}; // chave "catKey-ri" -> true/false; decidido só na 1ª vez que a rodada aparece
+let rodadasEstadoManual = {}; // chave "catKey-ri" -> true (recolhida) / false (aberta), fixado explicitamente ao clicar
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
 let unsubscribeTournament = null;
 let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
@@ -403,7 +403,7 @@ async function toggleNotificacoesHandler() {
 
 function carregarTorneioAtual() {
   if (unsubscribeTournament) { unsubscribeTournament(); unsubscribeTournament = null; }
-  rodadasEstadoColapso = {};
+  rodadasEstadoManual = {};
   if (!currentTournamentId) { state = null; return; }
   const r = ref(db, 'torneios/' + currentTournamentId);
   unsubscribeTournament = onValue(r, (snap) => {
@@ -1313,12 +1313,12 @@ function renderRounds(catRounds, catKey) {
   return `<div class="rounds">
     ${catRounds.map((rd, ri) => {
       const chave = `${catKey}-${ri}`;
-      if (!(chave in rodadasEstadoColapso)) rodadasEstadoColapso[chave] = rd.matches.every((m) => partidaJogada(m));
-      const recolhida = rodadasEstadoColapso[chave];
+      const todasJogadas = rd.matches.every((m) => partidaJogada(m));
+      const recolhida = chave in rodadasEstadoManual ? rodadasEstadoManual[chave] : todasJogadas;
       const jogadasCount = rd.matches.filter((m) => partidaJogada(m)).length;
       return `
       <div class="round-block ${rd.isFinal ? 'is-final' : ''}">
-        <div class="round-title round-title-toggle" data-action="toggle-rodada" data-chave="${chave}">
+        <div class="round-title round-title-toggle" data-action="toggle-rodada" data-chave="${chave}" data-recolhida="${recolhida ? '1' : '0'}">
           <span>${rd.isFinal ? '🏆 GRANDE FINAL' : `Rodada ${rd.round}`}${recolhida ? ` <em class="round-resumo">(${jogadasCount}/${rd.matches.length} jogadas)</em>` : ''}</span>
           ${rd.byes && rd.byes.length && !recolhida ? `<span class="bye">folga: ${rd.byes.map(nameOf).map(esc).join(', ')}</span>` : ''}
           <span class="round-toggle-icon">${recolhida ? '▼' : '▲'}</span>
@@ -1615,7 +1615,8 @@ function bindEvents() {
     });
     if (action === 'toggle-rodada') el.addEventListener('click', () => {
       const chave = el.dataset.chave;
-      rodadasEstadoColapso[chave] = !rodadasEstadoColapso[chave];
+      const atualRecolhida = el.dataset.recolhida === '1';
+      rodadasEstadoManual[chave] = !atualRecolhida;
       render();
     });
     if (action === 'toggle-atletas-conhecidos') el.addEventListener('click', () => { mostrarAtletasConhecidos = !mostrarAtletasConhecidos; render(); });
@@ -1815,6 +1816,7 @@ async function tryUnlock() {
     await setPersistence(auth, manterConectado ? browserLocalPersistence : browserSessionPersistence);
     await signInWithEmailAndPassword(auth, user.toLowerCase() + ADMIN_EMAIL_DOMAIN, pass);
     closePinModal();
+    selecionarTorneio(null);
   } catch (e) {
     const err = document.getElementById('pin-error');
     if (err) err.textContent = 'Usuário ou senha incorretos';
