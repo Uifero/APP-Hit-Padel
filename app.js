@@ -317,6 +317,7 @@ function cancelarAvisoDemora() {
 }
 const AVISO_DEMORA_HTML = '<div class="hint" style="margin-top:10px">Isso está demorando mais que o normal — geralmente é a conexão do aparelho. Continue aguardando ou tente recarregar a página.</div>';
 let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
+let rodadasEstadoColapso = {}; // chave "catKey-ri" -> true/false; decidido só na 1ª vez que a rodada aparece
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
 let unsubscribeTournament = null;
 let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
@@ -332,6 +333,9 @@ async function persist(next) {
 
 function getUrlTournamentId() {
   return new URLSearchParams(window.location.search).get('t');
+}
+function isModoTV() {
+  return new URLSearchParams(window.location.search).get('tv') === '1';
 }
 
 function selecionarTorneio(id) {
@@ -399,6 +403,7 @@ async function toggleNotificacoesHandler() {
 
 function carregarTorneioAtual() {
   if (unsubscribeTournament) { unsubscribeTournament(); unsubscribeTournament = null; }
+  rodadasEstadoColapso = {};
   if (!currentTournamentId) { state = null; return; }
   const r = ref(db, 'torneios/' + currentTournamentId);
   unsubscribeTournament = onValue(r, (snap) => {
@@ -449,6 +454,22 @@ function lembrarAtleta(nome, telefone) {
   if (atual && (!telefone || atual.telefone === telefone)) return; // já conhecido, nada novo pra salvar
   set(ref(db, 'atletas/' + chave), { nome: nome.trim(), telefone: telefone || atual?.telefone || '' }).catch((e) => console.error('Falha ao lembrar atleta', e));
 }
+function editarAtletaHandler(chaveAntiga) {
+  const nomeInput = [...document.querySelectorAll('[data-action="atleta-edit-nome"]')].find((el) => el.dataset.chave === chaveAntiga);
+  const telInput = [...document.querySelectorAll('[data-action="atleta-edit-telefone"]')].find((el) => el.dataset.chave === chaveAntiga);
+  if (!nomeInput || !telInput) return;
+  const novoNome = nomeInput.value.trim();
+  if (!novoNome) return;
+  const chaveNova = novoNome.toLowerCase();
+  const dados = { nome: novoNome, telefone: telInput.value.trim() };
+  const promessas = [set(ref(db, 'atletas/' + chaveNova), dados)];
+  if (chaveNova !== chaveAntiga) promessas.push(set(ref(db, 'atletas/' + chaveAntiga), null));
+  Promise.all(promessas).catch((e) => console.error('Falha ao editar atleta', e));
+}
+function removerAtletaHandler(chave, nome) {
+  if (!confirm(`Remover "${nome}" da lista de atletas conhecidos? Isso só afeta a sugestão automática, não mexe em nenhum torneio já cadastrado.`)) return;
+  set(ref(db, 'atletas/' + chave), null).catch((e) => console.error('Falha ao remover atleta', e));
+}
 
 onAuthStateChanged(auth, (user) => {
   isAdmin = !!user;
@@ -494,6 +515,20 @@ function formatDataHora(timestamp) {
   return `Criado em ${dia}/${mes} às ${hora}:${min}`;
 }
 
+function renderEstadoVazioPublico(catPlayers, catTeams, isChaves) {
+  const lista = isChaves ? catTeams : catPlayers;
+  const confirmadas = lista.filter((x) => x.confirmada).length;
+  const total = lista.length;
+  return `
+    <div class="card cta-card" style="text-align:center;margin-top:16px">
+      <div class="card-body">
+        <div class="visaogeral-num" style="font-size:36px">${confirmadas}</div>
+        <div class="visaogeral-label">${isChaves ? 'dupla(s)' : 'jogadora(s)'} confirmada(s)${total > confirmadas ? ` · ${total - confirmadas} aguardando confirmação` : ''}</div>
+        <div class="hint" style="margin-top:8px">O sorteio ainda não saiu. Assim que sair, as rodadas aparecem aqui.</div>
+      </div>
+    </div>
+  `;
+}
 function renderProximaPartidaPublica(catKey) {
   const resumo = resumoVisaoGeral(catKey);
   if (!resumo.proxima && !resumo.ultimoResultado) return '';
@@ -520,6 +555,7 @@ function render() {
     return;
   }
   cancelarAvisoDemora();
+  if (isModoTV()) { renderModoTV(currentCategoria()); return; }
   const isChaves = state.tipo === 'chaves';
   const catKeys = categoriaKeys(state);
   const catKey = currentCategoria();
@@ -560,6 +596,7 @@ function render() {
       ${renderInscricaoPublica()}
       ${!isAdmin ? renderInscritosPublico(catKey) : ''}
       ${isAdmin && (catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
+      ${!isAdmin && !catRounds.length && !catGroups.length ? renderEstadoVazioPublico(catPlayers, catTeams, isChaves) : ''}
       ${isChaves ? renderGroupsAndElimination(catGroups, catElim, catTeams, catKey) : renderAmericanoView(catRounds, stats, catPlayers, catKey)}
       `}
     </main>
@@ -568,6 +605,36 @@ function render() {
     <footer class="hp-footer">atualiza automaticamente</footer>
   `;
   bindEvents();
+}
+
+let tvSlide = 0;
+let tvTimer = null;
+function renderModoTV(catKey) {
+  if (!tvTimer) tvTimer = setInterval(() => { tvSlide = (tvSlide + 1) % 2; render(); }, 8000);
+  const catPlayers = state.players.filter((p) => categoriaOf(p) === catKey);
+  const catRounds = state.rounds[catKey] || [];
+  const catGroups = state.grupos.filter((g) => g.categoria === catKey);
+  const stats = computeStats(catPlayers, catRounds);
+  let titulo, conteudo;
+  if (tvSlide === 0) {
+    if (state.tipo === 'chaves') {
+      titulo = 'Classificação';
+      conteudo = catGroups.length ? catGroups.map((g) => renderGroupCard(g)).join('') : `<div class="tv-vazio">Aguardando sorteio das chaves...</div>`;
+    } else {
+      titulo = 'Ranking';
+      conteudo = catRounds.length ? renderRanking(stats) : `<div class="tv-vazio">Aguardando sorteio das rodadas...</div>`;
+    }
+  } else {
+    titulo = 'Ao vivo agora';
+    conteudo = renderAoVivoModulo(catKey);
+  }
+  root.innerHTML = `
+    <div class="tv-mode">
+      <div class="tv-header"><img class="tv-logo" src="./logo.png" alt="" /><div class="tv-nome">${esc(state.name)}</div></div>
+      <div class="tv-titulo">${titulo}</div>
+      <div class="tv-body">${conteudo}</div>
+    </div>
+  `;
 }
 
 function partidasDoTorneio(t) {
@@ -632,8 +699,22 @@ function renderModuloTipo(tipo, lista, isAdminView) {
 }
 
 let lobbyFiltroTipo = 'todos';
+let mostrarAtletasConhecidos = false;
 let lobbyFiltroStatus = 'todos';
 
+function renderChecklistPrimeirosPassos() {
+  return `
+    <div class="card cta-card" style="margin-top:12px">
+      <div class="card-head-static">👋 Primeiros passos</div>
+      <div class="card-body">
+        <div class="hint" style="text-align:left">1. Crie seu primeiro torneio abaixo, escolhendo o tipo</div>
+        <div class="hint" style="text-align:left;margin-top:6px">2. Dentro dele, cadastre as jogadoras (ou duplas) em "Inscrições"</div>
+        <div class="hint" style="text-align:left;margin-top:6px">3. Sorteie as rodadas (ou gere as chaves)</div>
+        <div class="hint" style="text-align:left;margin-top:6px">4. Publique o torneio e compartilhe o link com o grupo</div>
+      </div>
+    </div>
+  `;
+}
 function renderCentralGestao(ativos, encerrados) {
   const stats = statsGeraisTorneios([...ativos, ...encerrados]);
   let listaFiltrada = ativos.concat(lobbyFiltroStatus === 'encerrados' ? encerrados : []);
@@ -643,8 +724,10 @@ function renderCentralGestao(ativos, encerrados) {
   if (lobbyFiltroStatus === 'hoje') { const hoje = hojeISO(); listaFiltrada = listaFiltrada.filter((t) => t.dataInicio && hoje >= t.dataInicio && hoje <= (t.dataFim || t.dataInicio)); }
   if (lobbyFiltroTipo !== 'todos') listaFiltrada = listaFiltrada.filter((t) => (t.tipo || 'americano') === lobbyFiltroTipo);
   listaFiltrada = [...listaFiltrada].sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+  const clubeNovo = ativos.length === 0 && encerrados.length === 0;
 
   return `
+    ${clubeNovo ? renderChecklistPrimeirosPassos() : ''}
     <div class="lobby-stats-grid">
       <div class="visaogeral-item"><div class="visaogeral-num">${stats.totalAtivos}</div><div class="visaogeral-label">Torneios ativos</div></div>
       <div class="visaogeral-item"><div class="visaogeral-num">${stats.publicadosCount}</div><div class="visaogeral-label">Publicados</div></div>
@@ -711,6 +794,23 @@ function renderCentralGestao(ativos, encerrados) {
             <div class="field"><label>Quantidade de quadras</label><input type="number" min="1" max="20" id="novo-torneio-quadras" value="2" /></div>
             <button class="btn-primary" data-action="criar-torneio" data-tipo="americano">Criar e abrir</button>
           </div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <div class="card-head-static" data-action="toggle-atletas-conhecidos" style="cursor:pointer">👥 Atletas conhecidos (${Object.keys(atletasConhecidos).length}) ${mostrarAtletasConhecidos ? '▲' : '▼'}</div>
+          ${mostrarAtletasConhecidos ? `
+          <div class="card-body">
+            <div class="hint" style="text-align:left;margin-bottom:10px">Essa lista é só pra sugerir nome/telefone automaticamente na hora de inscrever alguém. Editar ou remover aqui não muda nada nos torneios já cadastrados.</div>
+            ${Object.keys(atletasConhecidos).length === 0 ? `<div class="hint">Ninguém cadastrado ainda.</div>` : Object.entries(atletasConhecidos).sort((a, b) => a[1].nome.localeCompare(b[1].nome)).map(([chave, a]) => `
+              <div class="row2" style="margin-bottom:8px">
+                <input value="${esc(a.nome)}" data-action="atleta-edit-nome" data-chave="${esc(chave)}" />
+                <input value="${esc(a.telefone || '')}" placeholder="Telefone" data-action="atleta-edit-telefone" data-chave="${esc(chave)}" />
+              </div>
+              <div class="row" style="margin-bottom:14px">
+                <button class="mode-btn" data-action="atleta-salvar" data-chave="${esc(chave)}">Salvar</button>
+                <button class="mode-btn btn-danger" data-action="atleta-remover" data-chave="${esc(chave)}" data-nome="${esc(a.nome)}">Remover</button>
+              </div>
+            `).join('')}
+          </div>` : ''}
         </div>
       </div>
       <aside>
@@ -835,11 +935,13 @@ function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
       <button class="tab ${tab === 'rodadas' ? 'active' : ''}" data-action="tab" data-tab="rodadas">Rodadas</button>
       <button class="tab ${tab === 'ranking' ? 'active' : ''}" data-action="tab" data-tab="ranking">Ranking</button>
       <button class="tab ${tab === 'jogos' ? 'active' : ''}" data-action="tab" data-tab="jogos">Jogos</button>
+      <button class="tab ${tab === 'aovivo' ? 'active' : ''}" data-action="tab" data-tab="aovivo">Ao Vivo</button>
     </div>
     ${isAdmin && podeGerarFinal ? `<button class="btn-primary" style="margin-bottom:14px" data-action="gerar-final">🏆 Gerar final (top 4)</button>` : ''}
-    ${tab === 'rodadas' ? renderRounds(catRounds) : ''}
+    ${tab === 'rodadas' ? renderRounds(catRounds, catKey) : ''}
     ${tab === 'ranking' ? renderRanking(stats) : ''}
     ${tab === 'jogos' ? renderJogosView(catKey) : ''}
+    ${tab === 'aovivo' ? renderAoVivoModulo(catKey) : ''}
   `;
 }
 
@@ -859,7 +961,8 @@ function resumoVisaoGeral(catKey) {
   futuros.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
   const jogadosComHorario = items.filter((it) => partidaJogada(it) && it.data && it.hora);
   jogadosComHorario.sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora));
-  return { total, jogados, pendentes, proxima: futuros[0] || null, ultimoResultado: jogadosComHorario[0] || null };
+  const atrasadas = items.filter((it) => !partidaJogada(it) && it.data && it.hora && (it.data < hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) < agoraMin)));
+  return { total, jogados, pendentes, proxima: futuros[0] || null, ultimoResultado: jogadosComHorario[0] || null, atrasadas: atrasadas.length };
 }
 function statusQuadrasAoVivo(catKey) {
   const items = collectJogos(catKey);
@@ -938,12 +1041,15 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
   <section class="card">
     <div class="card-head-static">📊 Visão geral</div>
     <div class="card-body">
+      ${resumo.atrasadas > 0 ? `<div class="alerta-atraso">⚠️ ${resumo.atrasadas} partida${resumo.atrasadas > 1 ? 's' : ''} passou do horário marcado sem placar lançado</div>` : ''}
       <div class="visaogeral-grid">
         <div class="visaogeral-item"><div class="visaogeral-num">${resumo.total}</div><div class="visaogeral-label">Partidas totais</div></div>
         <div class="visaogeral-item"><div class="visaogeral-num">${resumo.jogados}</div><div class="visaogeral-label">Com resultado</div></div>
         <div class="visaogeral-item"><div class="visaogeral-num">${resumo.pendentes}</div><div class="visaogeral-label">Pendentes</div></div>
       </div>
       ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
+      <button class="mode-btn" style="width:100%;margin-top:10px" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
     </div>
   </section>
   <section class="card cta-card">
@@ -1130,9 +1236,11 @@ function renderCategoriasSetup() {
 
 function renderPlayersSetup(minRounds) {
   const showCatSelect = state.categorias.length > 0;
+  const pendentes = state.players.filter((p) => !p.confirmada).length;
   return `
     <div class="field">
       <label>Jogadoras (${state.players.length})</label>
+      ${pendentes > 0 ? `<button class="mode-btn" data-action="confirmar-todas-jogadoras" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
       <div class="chips">
         ${state.players.map((p) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} <button class="conf-badge ${p.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-player" data-id="${p.id}" title="${p.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${p.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}" data-nome="${esc(p.name)}">×</button></span>`).join('')}
       </div>
@@ -1151,9 +1259,11 @@ function montarNomeDupla(j1, j2, semParceiro) {
 
 function renderTeamsSetup() {
   const showCatSelect = state.categorias.length > 0;
+  const pendentes = state.teams.filter((t) => !t.confirmada).length;
   return `
     <div class="field">
       <label>Duplas (${state.teams.length})</label>
+      ${pendentes > 0 ? `<button class="mode-btn" data-action="confirmar-todas-duplas" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
       <div class="chips">
         ${state.teams.map((t) => {
           const tel1 = t.telefone1 || t.telefone || '';
@@ -1177,13 +1287,23 @@ function renderTeamsSetup() {
     </div>`;
 }
 
-function renderRounds(catRounds) {
+function renderRounds(catRounds, catKey) {
   return `<div class="rounds">
-    ${catRounds.map((rd, ri) => `
+    ${catRounds.map((rd, ri) => {
+      const chave = `${catKey}-${ri}`;
+      if (!(chave in rodadasEstadoColapso)) rodadasEstadoColapso[chave] = rd.matches.every((m) => partidaJogada(m));
+      const recolhida = rodadasEstadoColapso[chave];
+      const jogadasCount = rd.matches.filter((m) => partidaJogada(m)).length;
+      return `
       <div class="round-block ${rd.isFinal ? 'is-final' : ''}">
-        <div class="round-title"><span>${rd.isFinal ? '🏆 GRANDE FINAL' : `Rodada ${rd.round}`}</span>${rd.byes && rd.byes.length ? `<span class="bye">folga: ${rd.byes.map(nameOf).map(esc).join(', ')}</span>` : ''}</div>
-        <div class="matches">${rd.matches.map((m) => renderMatch(m, ri)).join('')}</div>
-      </div>`).join('')}
+        <div class="round-title round-title-toggle" data-action="toggle-rodada" data-chave="${chave}">
+          <span>${rd.isFinal ? '🏆 GRANDE FINAL' : `Rodada ${rd.round}`}${recolhida ? ` <em class="round-resumo">(${jogadasCount}/${rd.matches.length} jogadas)</em>` : ''}</span>
+          ${rd.byes && rd.byes.length && !recolhida ? `<span class="bye">folga: ${rd.byes.map(nameOf).map(esc).join(', ')}</span>` : ''}
+          <span class="round-toggle-icon">${recolhida ? '▼' : '▲'}</span>
+        </div>
+        ${recolhida ? '' : `<div class="matches">${rd.matches.map((m) => renderMatch(m, ri)).join('')}</div>`}
+      </div>`;
+    }).join('')}
   </div>`;
 }
 function quadraNome(state, courtNum) {
@@ -1241,8 +1361,9 @@ function renderGroupsAndElimination(catGroups, catElim, catTeams, catKey) {
     <div class="tabs">
       <button class="tab ${tab === 'rodadas' ? 'active' : ''}" data-action="tab" data-tab="rodadas">Chaveamento</button>
       <button class="tab ${tab === 'jogos' ? 'active' : ''}" data-action="tab" data-tab="jogos">Jogos</button>
+      <button class="tab ${tab === 'aovivo' ? 'active' : ''}" data-action="tab" data-tab="aovivo">Ao Vivo</button>
     </div>
-    ${tab === 'jogos' ? renderJogosView(catKey) : `
+    ${tab === 'jogos' ? renderJogosView(catKey) : tab === 'aovivo' ? renderAoVivoModulo(catKey) : `
     <div class="groups-wrap">
       ${catGroups.map((g) => renderGroupCard(g)).join('')}
     </div>
@@ -1291,7 +1412,7 @@ function renderEliminationView(catElim) {
   const champion = catElim[catElim.length - 1][0]?.winner;
   return `<div class="rounds">
     ${champion ? `<div class="champion-banner">🏆 Campeã: ${esc(teamNameOf(champion))}</div>` : ''}
-    ${catElim.map((rd) => `<div class="round-block"><div class="round-title"><span>${roundName(rd.length)}</span></div><div class="matches">${rd.map((m) => renderBracketMatch(m)).join('')}</div></div>`).join('')}
+    ${catElim.map((rd) => `<div class="round-block"><div class="round-title"><span>${roundName(rd.length)}</span></div><div class="matches bracket-matches">${rd.map((m) => renderBracketMatch(m)).join('')}</div></div>`).join('')}
   </div>`;
 }
 function renderBracketMatch(m) {
@@ -1459,6 +1580,18 @@ function bindEvents() {
     if (action === 'set-tipo') el.addEventListener('click', () => setTipoHandler(el.dataset.tipo));
     if (action === 'toggle-inscricoes') el.addEventListener('click', () => persist({ ...state, inscricoesAbertas: !state.inscricoesAbertas }));
     if (action === 'toggle-visivel') el.addEventListener('click', () => persist({ ...state, visivelPublico: !state.visivelPublico }));
+    if (action === 'compartilhar-whatsapp') el.addEventListener('click', () => compartilharTorneioHandler());
+    if (action === 'abrir-modo-tv') el.addEventListener('click', () => {
+      window.open(`${window.location.origin}${window.location.pathname}?t=${currentTournamentId}&tv=1`, '_blank');
+    });
+    if (action === 'toggle-rodada') el.addEventListener('click', () => {
+      const chave = el.dataset.chave;
+      rodadasEstadoColapso[chave] = !rodadasEstadoColapso[chave];
+      render();
+    });
+    if (action === 'toggle-atletas-conhecidos') el.addEventListener('click', () => { mostrarAtletasConhecidos = !mostrarAtletasConhecidos; render(); });
+    if (action === 'atleta-salvar') el.addEventListener('click', () => editarAtletaHandler(el.dataset.chave));
+    if (action === 'atleta-remover') el.addEventListener('click', () => removerAtletaHandler(el.dataset.chave, el.dataset.nome));
     if (action === 'toggle-notificacoes') el.addEventListener('click', toggleNotificacoesHandler);
     if (action === 'set-data-inicio') el.addEventListener('change', () => persist({ ...state, dataInicio: el.value }));
     if (action === 'set-data-fim') el.addEventListener('change', () => persist({ ...state, dataFim: el.value }));
@@ -1475,6 +1608,8 @@ function bindEvents() {
     });
     if (action === 'toggle-confirm-player') el.addEventListener('click', () => toggleConfirmHandler('players', el.dataset.id));
     if (action === 'toggle-confirm-team') el.addEventListener('click', () => toggleConfirmHandler('teams', el.dataset.id));
+    if (action === 'confirmar-todas-jogadoras') el.addEventListener('click', () => persist({ ...state, players: state.players.map((p) => ({ ...p, confirmada: true })) }));
+    if (action === 'confirmar-todas-duplas') el.addEventListener('click', () => persist({ ...state, teams: state.teams.map((t) => ({ ...t, confirmada: true })) }));
     if (action === 'toggle-oculto-player') el.addEventListener('click', () => toggleOcultoHandler('players', el.dataset.id));
     if (action === 'toggle-oculto-team') el.addEventListener('click', () => toggleOcultoHandler('teams', el.dataset.id));
     if (action === 'add-player') el.addEventListener('click', addPlayerHandler);
@@ -1575,10 +1710,18 @@ function bindEvents() {
     const termo = buscaInput.value.trim().toLowerCase();
     document.querySelectorAll('.round-block').forEach((block) => {
       let algumVisivel = false;
+      const naChave = new Set(block.querySelectorAll('.bracket-matches .match'));
       block.querySelectorAll('.match').forEach((m) => {
-        const show = !termo || m.textContent.toLowerCase().includes(termo);
-        m.style.display = show ? '' : 'none';
-        if (show) algumVisivel = true;
+        if (naChave.has(m)) {
+          // fase eliminatória: nunca esconde (quebraria a chave), só destaca "você está aqui"
+          const acha = termo && m.textContent.toLowerCase().includes(termo);
+          m.classList.toggle('match-destaque', acha);
+          algumVisivel = true;
+        } else {
+          const show = !termo || m.textContent.toLowerCase().includes(termo);
+          m.style.display = show ? '' : 'none';
+          if (show) algumVisivel = true;
+        }
       });
       block.style.display = algumVisivel ? '' : 'none';
     });
@@ -1622,6 +1765,16 @@ function bindPinModal() {
   });
 }
 function closePinModal() { document.getElementById('pin-modal-slot').innerHTML = ''; }
+function compartilharTorneioHandler() {
+  if (!state.visivelPublico) {
+    if (!confirm('Esse torneio ainda está oculto pro público — quem receber o link vai ver "não disponível". Publicar agora e compartilhar?')) return;
+    persist({ ...state, visivelPublico: true });
+  }
+  const link = `${window.location.origin}${window.location.pathname}?t=${currentTournamentId}`;
+  const mensagem = `🎾 ${state.name}\nAcompanhe rodadas, ranking e resultados ao vivo, direto do celular:\n${link}`;
+  window.open(`https://wa.me/?text=${encodeURIComponent(mensagem)}`, '_blank');
+}
+
 async function tryUnlock() {
   const user = document.getElementById('login-user').value.trim();
   const pass = document.getElementById('login-pass').value.toLowerCase();
