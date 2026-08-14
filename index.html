@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Hit Padel — Torneio Americano</title>
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#072740" />
+<link rel="icon" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Hit Padel" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -59,8 +66,26 @@
   .aovivo-quadra{font-family:'Bebas Neue',sans-serif;font-size:16px;color:var(--orange);}
   .aovivo-status{font-size:12px;margin-top:2px;}
   .aovivo-jogo{font-size:11px;opacity:.75;margin-top:6px;}
+  .match-destaque{border:2px solid var(--yellow) !important;box-shadow:0 0 0 3px rgba(224,215,58,.2);}
   .cta-card{border-color:var(--orange);}
   .hint-alerta{color:#ffb85c;}
+  .alerta-atraso{background:#3a1a1a;border:1px solid #b04545;color:#ff9b9b;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:13px;font-weight:600;}
+  .round-title-toggle{cursor:pointer;}
+  .round-resumo{font-size:11px;opacity:.65;font-style:normal;}
+  .round-toggle-icon{opacity:.6;font-size:11px;}
+  .tv-mode{min-height:100vh;padding:32px;background:var(--navy-deep);}
+  .tv-header{display:flex;align-items:center;gap:16px;margin-bottom:24px;}
+  .tv-logo{width:56px;height:56px;border-radius:12px;}
+  .tv-nome{font-family:'Bebas Neue',sans-serif;font-size:32px;color:var(--yellow);}
+  .tv-titulo{font-family:'Bebas Neue',sans-serif;font-size:44px;color:var(--orange);margin-bottom:20px;}
+  .tv-vazio{font-size:22px;opacity:.7;}
+  .tv-mode .ranking, .tv-mode table{font-size:22px;}
+  .tv-mode .aovivo-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;}
+  .tv-mode .aovivo-card{padding:24px;}
+  .tv-mode .aovivo-quadra{font-size:28px;}
+  .tv-mode .aovivo-status{font-size:18px;}
+  .tv-mode .aovivo-jogo{font-size:16px;}
+  .tv-mode .group-card{font-size:18px;}
   .lobby-criado-em{font-size:11px;opacity:.55;font-weight:400;margin-top:2px;}
   .proxima-banner{background:linear-gradient(135deg,var(--navy-deep),var(--navy));border:1px solid var(--orange);border-radius:14px;padding:14px 16px;margin-top:16px;text-align:center;}
   .proxima-banner-label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.75;}
