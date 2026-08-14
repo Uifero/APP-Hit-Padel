@@ -902,18 +902,23 @@ function renderInscricaoPublica() {
     </section>`;
 }
 
+let inscritosVisiveis = true;
 function renderInscritosPublico(catKey) {
   const list = state.tipo === 'chaves' ? state.teams : state.players;
-  const catList = list.filter((x) => categoriaOf(x) === catKey && !x.oculto);
+  const catList = list.filter((x) => categoriaOf(x) === catKey && !x.oculto).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
   if (!catList.length) return '';
   return `
     <section class="card">
-      <div class="card-head-static">👥 Inscritas (${catList.length})</div>
-      <div class="card-body">
-        <div class="chips">
-          ${catList.map((x) => `<span class="chip">${esc(x.name)} ${x.confirmada ? '<span class="badge-ok">✓ confirmada</span>' : '<span class="badge-pending">⏳ pendente</span>'}</span>`).join('')}
-        </div>
+      <div class="card-head-static inscritos-header" data-action="toggle-inscritos-publico">
+        <span>👥 Inscritas (${catList.length})</span>
+        <span class="round-toggle-icon">${inscritosVisiveis ? '▲ ocultar' : '▼ mostrar'}</span>
       </div>
+      ${inscritosVisiveis ? `
+      <div class="card-body">
+        <div class="inscritos-grid">
+          ${catList.map((x) => `<div class="inscrito-item">${esc(x.name)} ${x.confirmada ? '<span class="badge-ok">✓</span>' : '<span class="badge-pending">⏳</span>'}</div>`).join('')}
+        </div>
+      </div>` : ''}
     </section>`;
 }
 function renderBuscaAtleta() {
@@ -927,6 +932,24 @@ function renderCategoriaTabs(catKeys, current) {
   </div>`;
 }
 
+function renderGerarHorariosPanel(catKey) {
+  const items = collectJogos(catKey);
+  const semData = items.filter((i) => !i.data).length;
+  if (!isAdmin || semData === 0) return '';
+  return `
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-head-static">🕐 Gerar horários automaticamente (${semData} jogo${semData > 1 ? 's' : ''} sem data)</div>
+      <div class="card-body">
+        <div class="field"><label>Data dos jogos</label><input type="date" id="auto-data" /></div>
+        <div class="row2">
+          <div class="field"><label>Horário de início (1º jogo)</label><input type="time" id="auto-hora-inicio" /></div>
+          <div class="field"><label>Duração por jogo (min)</label><input type="number" min="1" id="auto-duracao" value="40" /></div>
+        </div>
+        <button class="btn-primary" data-action="gerar-horarios" data-cat="${esc(catKey)}">Gerar horários em sequência</button>
+        <div class="hint" style="text-align:left">Jogos da mesma rodada/fase recebem o mesmo horário (jogam ao mesmo tempo); a próxima rodada/fase começa depois da duração informada. Só preenche jogos que ainda não têm data.</div>
+      </div>
+    </div>`;
+}
 function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
   if (!catRounds.length) return '';
   const podeGerarFinal = state.tipo === 'mini' && !catRounds.some((r) => r.isFinal) && catRounds.length > 0 && !roundsWithoutScores(catRounds) && catPlayers.length >= 4;
@@ -934,13 +957,11 @@ function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
     <div class="tabs">
       <button class="tab ${tab === 'rodadas' ? 'active' : ''}" data-action="tab" data-tab="rodadas">Rodadas</button>
       <button class="tab ${tab === 'ranking' ? 'active' : ''}" data-action="tab" data-tab="ranking">Ranking</button>
-      <button class="tab ${tab === 'jogos' ? 'active' : ''}" data-action="tab" data-tab="jogos">Jogos</button>
       <button class="tab ${tab === 'aovivo' ? 'active' : ''}" data-action="tab" data-tab="aovivo">Ao Vivo</button>
     </div>
     ${isAdmin && podeGerarFinal ? `<button class="btn-primary" style="margin-bottom:14px" data-action="gerar-final">🏆 Gerar final (top 4)</button>` : ''}
-    ${tab === 'rodadas' ? renderRounds(catRounds, catKey) : ''}
+    ${tab === 'rodadas' ? renderGerarHorariosPanel(catKey) + renderRounds(catRounds, catKey) : ''}
     ${tab === 'ranking' ? renderRanking(stats) : ''}
-    ${tab === 'jogos' ? renderJogosView(catKey) : ''}
     ${tab === 'aovivo' ? renderAoVivoModulo(catKey) : ''}
   `;
 }
@@ -1086,10 +1107,11 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
           <div class="dash-title">Ao Vivo</div>
           <div class="dash-sub">Status por quadra agora</div>
         </button>
+        ${state.tipo === 'chaves' ? `
         <button class="dash-card" data-action="ir-jogos">
           <div class="dash-title">Jogos</div>
           <div class="dash-sub">Ver e agendar horários</div>
-        </button>
+        </button>` : ''}
       </div>
     </div>
   </section>`;
@@ -1321,9 +1343,10 @@ function renderMatch(m, ri) {
   const done = partidaJogada(m);
   const editing = editingMatches.has(m.id);
   const showInputs = isAdmin && (!done || editing);
+  const ag = state.agendamentos[m.id] || {};
   return `
   <div class="match">
-    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${done && !editing ? '<span class="check">✓</span>' : ''}</div>
+    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${ag.data ? `<span class="jogo-hora">🕐 ${formatData(ag.data)} ${esc(ag.hora || '')}</span>` : ''}${done && !editing ? '<span class="check">✓</span>' : ''}</div>
     <div class="team-row">
       <span class="team-name">${m.teamA.map(nameOf).map(esc).join(' + ')}</span>
       ${showInputs ? renderScoreStepper(m.id, 'a', d.a) : `<span class="score">${m.scoreA ?? '–'}</span>`}
@@ -1335,6 +1358,12 @@ function renderMatch(m, ri) {
     </div>
     ${isAdmin && showInputs ? `<button class="btn-save" data-action="save-score" data-match="${m.id}">${done ? 'Salvar alteração' : 'Salvar placar'}</button>` : ''}
     ${isAdmin && done && !editing ? `<div class="saved-row"><span class="saved-tag">✓ Salvo</span><button class="btn-edit" data-action="edit-score" data-match="${m.id}">Editar</button></div>` : ''}
+    ${isAdmin ? `
+      <div class="row" style="margin-top:8px">
+        <input type="date" class="agendamento-data" data-match="${m.id}" value="${esc(ag.data || '')}" />
+        <input type="time" class="agendamento-hora" data-match="${m.id}" value="${esc(ag.hora || '')}" />
+      </div>
+    ` : ''}
   </div>`;
 }
 function hasEmpate(list, keyFn) {
@@ -1543,7 +1572,7 @@ function bindEvents() {
     if (action === 'toggle-setup') el.addEventListener('click', () => { setupOpen = !setupOpen; render(); });
     if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; render(); });
     if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; render(); });
-    if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; tab = 'jogos'; render(); });
+    if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; tab = state.tipo === 'chaves' ? 'jogos' : 'rodadas'; render(); });
     if (action === 'voltar-lobby') el.addEventListener('click', () => selecionarTorneio(null));
     if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
     if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
@@ -1590,6 +1619,7 @@ function bindEvents() {
       render();
     });
     if (action === 'toggle-atletas-conhecidos') el.addEventListener('click', () => { mostrarAtletasConhecidos = !mostrarAtletasConhecidos; render(); });
+    if (action === 'toggle-inscritos-publico') el.addEventListener('click', () => { inscritosVisiveis = !inscritosVisiveis; render(); });
     if (action === 'atleta-salvar') el.addEventListener('click', () => editarAtletaHandler(el.dataset.chave));
     if (action === 'atleta-remover') el.addEventListener('click', () => removerAtletaHandler(el.dataset.chave, el.dataset.nome));
     if (action === 'toggle-notificacoes') el.addEventListener('click', toggleNotificacoesHandler);
