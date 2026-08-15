@@ -2089,11 +2089,12 @@ function removeCategoriaHandler(cat) {
   if (!confirm(`Remover a categoria "${cat}"? Jogadoras/duplas cadastradas nela continuam, mas sem categoria.`)) return;
   persist({ ...state, categorias: state.categorias.filter((c) => c !== cat) });
 }
-// Inscrição feita pelo próprio admin (ex: pagou em dinheiro no balcão) já entra confirmada/paga — se estiver
-// errado, ele pode desmarcar depois com o mesmo botão usado pra reverter qualquer confirmação de pagamento.
+// Inscrição feita pelo próprio admin (ex: anotou no balcão) entra do mesmo jeito que uma inscrição
+// pública: pendente até alguém (o próprio admin) clicar em "marcar pago" — assim toda cobrança passa
+// pela mesma confirmação, sem exceção, e tanto a atleta (se abrir o link) quanto o admin veem "pendente".
 function dadosPagamentoNaInscricao() {
   const valor = Number(state.valorInscricao) || 0;
-  return valor > 0 ? { valor, statusPagamento: 'pago' } : {};
+  return valor > 0 ? { valor, statusPagamento: 'pendente' } : {};
 }
 function addPlayerHandler() {
   const input = document.getElementById('new-player');
@@ -2101,7 +2102,8 @@ function addPlayerHandler() {
   if (!name) return;
   const catSelect = document.getElementById('new-player-cat');
   const categoria = catSelect ? catSelect.value : '';
-  persist({ ...state, players: [...state.players, { id: uid(), name, categoria, confirmada: true, oculto: false, ...dadosPagamentoNaInscricao() }] });
+  const temValor = Number(state.valorInscricao) > 0;
+  persist({ ...state, players: [...state.players, { id: uid(), name, categoria, confirmada: !temValor, oculto: false, ...dadosPagamentoNaInscricao() }] });
   lembrarAtleta(name, '');
 }
 function addTeamHandler() {
@@ -2114,7 +2116,8 @@ function addTeamHandler() {
   const catSelect = document.getElementById('new-team-cat');
   const categoria = catSelect ? catSelect.value : '';
   const name = montarNomeDupla(j1, j2, semParceiro);
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: true, oculto: false, ...dadosPagamentoNaInscricao() }] });
+  const temValor = Number(state.valorInscricao) > 0;
+  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: !temValor, oculto: false, ...dadosPagamentoNaInscricao() }] });
   lembrarAtleta(j1, tel1);
   if (j2) lembrarAtleta(j2, tel2);
 }
