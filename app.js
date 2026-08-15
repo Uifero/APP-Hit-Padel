@@ -2,12 +2,19 @@ import { firebaseConfig } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getDatabase, ref, onValue, set, get } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js';
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 const auth = getAuth(app);
+// Cloud Function que cria a cobrança Pix de verdade no Mercado Pago (backend em /functions) — a
+// confirmação automática de pagamento (webhook) depende dela estar implantada e configurada.
+// Se não estiver (ou der erro), o app cai pro Pix local estático (config/pix) com confirmação manual.
+const functions = getFunctions(app, 'southamerica-east1');
+const criarCobrancaPixFn = httpsCallable(functions, 'criarCobrancaPix');
 const torneiosRef = ref(db, 'torneios');
 const atletasRef = ref(db, 'atletas');
+const pixConfigRef = ref(db, 'config/pix');
 const ADMIN_EMAIL_DOMAIN = '@hitpadel.local';
 
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -48,6 +55,7 @@ function defaultState() {
     duracaoJogoMin: 40,
     encerrado: false,
     agendamentos: {},   // { [matchId]: { data, hora } }
+    valorInscricao: 0,  // R$ — 0/vazio = torneio gratuito. No tipo 'chaves' é sempre por dupla; nos demais, por atleta.
   };
 }
 
@@ -328,6 +336,10 @@ let lobbyFiltroTipo = 'todos';
 let mostrarAtletasConhecidos = false;
 let lobbyFiltroStatus = 'todos';
 let inscritosVisiveis = true;
+let pixConfig = { chave: '', nome: '', cidade: '' }; // config/pix — uma chave só, compartilhada por todos os torneios do clube
+let pubPagamentoAtivo = null; // { list: 'players'|'teams', id } — controla o card de pagamento aberto na tela pública após inscrição
+let pubPagamentoCarregando = false; // true enquanto espera a Cloud Function criar a cobrança no Mercado Pago
+let pubPagamentoErroMsg = null; // mensagem de erro se nem a cobrança automática nem o Pix manual deram certo
 
 const root = document.getElementById('root');
 
@@ -349,6 +361,9 @@ function selecionarTorneio(id) {
   painelAdmin = null;
   tab = 'rodadas';
   selectedCategoria = null;
+  pubPagamentoAtivo = null;
+  pubPagamentoCarregando = false;
+  pubPagamentoErroMsg = null;
   const url = new URL(window.location.href);
   if (id) url.searchParams.set('t', id); else url.searchParams.delete('t');
   window.history.pushState({}, '', url);
@@ -420,9 +435,9 @@ function carregarTorneioAtual() {
   });
 }
 
-async function criarNovoTorneio(nome, tipo, numCourts) {
+async function criarNovoTorneio(nome, tipo, numCourts, valorInscricao) {
   const id = uid() + uid();
-  const novo = { ...defaultState(), name: nome || 'Novo torneio', tipo: tipo || 'americano', numCourts: Math.max(1, Math.min(20, Number(numCourts) || 2)), criadoEm: Date.now() };
+  const novo = { ...defaultState(), name: nome || 'Novo torneio', tipo: tipo || 'americano', numCourts: Math.max(1, Math.min(20, Number(numCourts) || 2)), valorInscricao: Math.max(0, Number(valorInscricao) || 0), criadoEm: Date.now() };
   try { await set(ref(db, 'torneios/' + id), novo); } catch (e) { console.error('Falha ao criar torneio', e); }
   selecionarTorneio(id);
 }
@@ -452,6 +467,10 @@ onValue(atletasRef, (snap) => {
   atletasConhecidos = snap.val() || {};
   render();
 });
+onValue(pixConfigRef, (snap) => {
+  pixConfig = snap.val() || { chave: '', nome: '', cidade: '' };
+  render();
+});
 function lembrarAtleta(nome, telefone) {
   if (!nome) return;
   const chave = nome.trim().toLowerCase();
@@ -476,6 +495,17 @@ function removerAtletaHandler(chave, nome) {
   if (!confirm(`Remover "${nome}" da lista de atletas conhecidos? Isso só afeta a sugestão automática, não mexe em nenhum torneio já cadastrado.`)) return;
   set(ref(db, 'atletas/' + chave), null).catch((e) => console.error('Falha ao remover atleta', e));
 }
+// Chave Pix da conta — uma só, compartilhada por todos os torneios (config/pix). Usada pra montar o
+// payload do QR Code de cobrança; não guarda nenhum dado bancário além do que já é público num Pix.
+function pixSalvarHandler() {
+  const chave = document.getElementById('pix-chave').value.trim();
+  const nome = document.getElementById('pix-nome').value.trim();
+  const cidade = document.getElementById('pix-cidade').value.trim();
+  if (!chave) { alert('Preencha a chave Pix.'); return; }
+  if (!nome) { alert('Preencha o nome do recebedor.'); return; }
+  if (!cidade) { alert('Preencha a cidade.'); return; }
+  set(pixConfigRef, { chave, nome, cidade }).catch((e) => { console.error('Falha ao salvar chave Pix', e); alert('Erro ao salvar a chave Pix. Tente de novo.'); });
+}
 
 currentTournamentId = getUrlTournamentId();
 if (currentTournamentId) carregarTorneioAtual();
@@ -499,6 +529,60 @@ function nameOf(id) { return state.players.find((p) => p.id === id)?.name || '?'
 function teamNameOf(id) { return state.teams.find((t) => t.id === id)?.name || (id ? '?' : 'aguardando'); }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function catLabel(k) { return k === DEFAULT_CAT ? '' : k; }
+
+// ---------- Pix (Copia e Cola / BR Code estático) — gerado 100% local, sem gateway de pagamento ----------
+function formatMoeda(v) { return (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+function crc16Pix(payload) {
+  let crc = 0xFFFF;
+  for (let i = 0; i < payload.length; i++) {
+    crc ^= payload.charCodeAt(i) << 8;
+    for (let j = 0; j < 8; j++) crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+  }
+  return crc.toString(16).toUpperCase().padStart(4, '0');
+}
+function pixTLV(id, valor) { return `${id}${String(valor.length).padStart(2, '0')}${valor}`; }
+function normalizarTextoPix(s, max) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9 ]/g, '').trim().toUpperCase().slice(0, max);
+}
+// Monta o payload EMV do Pix estático (com valor fixo) — qualquer app de banco lê via QR Code ou "copia e cola".
+// Confirmação de que o pagamento realmente caiu não é automática (não há gateway): é manual (organizador) ou autodeclarada (atleta).
+function gerarPixPayload({ chave, nome, cidade, valor, txid }) {
+  const merchantInfo = pixTLV('00', 'br.gov.bcb.pix') + pixTLV('01', String(chave || '').trim());
+  const txidLimpo = String(txid || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 25) || '***';
+  const semCrc = [
+    pixTLV('00', '01'),
+    pixTLV('01', '12'),
+    pixTLV('26', merchantInfo),
+    pixTLV('52', '0000'),
+    pixTLV('53', '986'),
+    pixTLV('54', Number(valor).toFixed(2)),
+    pixTLV('58', 'BR'),
+    pixTLV('59', normalizarTextoPix(nome, 25) || 'HIT PADEL'),
+    pixTLV('60', normalizarTextoPix(cidade, 15) || 'BRASIL'),
+    pixTLV('62', pixTLV('05', txidLimpo)),
+  ].join('') + '6304';
+  return semCrc + crc16Pix(semCrc);
+}
+function copiarPixHandler(texto) {
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = texto; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* ignora — clipboard indisponível */ }
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(texto).catch(fallback);
+  else fallback();
+  alert('Código Pix copiado! Cole no app do seu banco em "Pix Copia e Cola".');
+}
+// Desenha nos <canvas data-pix-qr="..."> depois que o innerHTML é montado — a lib QRCode (CDN) expõe QRCode.toCanvas.
+function desenharQrCodesPix() {
+  document.querySelectorAll('canvas[data-pix-qr]').forEach((canvas) => {
+    const texto = canvas.dataset.pixQr;
+    if (!texto || typeof QRCode === 'undefined') return;
+    QRCode.toCanvas(canvas, texto, { width: 220, margin: 1, color: { dark: '#072740', light: '#F6F3EA' } }, (err) => { if (err) console.error('Falha ao gerar QR Pix', err); });
+  });
+}
 
 function currentCategoria() {
   const keys = categoriaKeys(state);
@@ -605,6 +689,7 @@ function render() {
       ${!isAdmin ? renderProximaPartidaPublica(catKey) : ''}
       ${catKeys.length > 1 ? renderCategoriaTabs(catKeys, catKey) : ''}
       ${renderInscricaoPublica()}
+      ${!isAdmin ? renderPagamentoCard() : ''}
       ${!isAdmin ? renderInscritosPublico(catKey) : ''}
       ${isAdmin && (catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
       ${!isAdmin && !catRounds.length && !catGroups.length ? renderEstadoVazioPublico(catPlayers, catTeams, isChaves) : ''}
@@ -785,6 +870,19 @@ function renderCentralGestao(ativos, encerrados) {
           </table>
         </div>
         <div class="card" style="margin-top:20px">
+          <div class="card-head-static">💳 Receber pagamentos (Pix)</div>
+          <div class="card-body">
+            <div class="hint" style="text-align:left;margin-bottom:4px">Configure sua chave Pix uma vez só — ela é usada pra gerar o QR Code de cobrança em qualquer torneio que tiver valor de inscrição.</div>
+            <div class="field"><label>Chave Pix</label><input id="pix-chave" placeholder="CPF, e-mail, telefone ou chave aleatória" value="${esc(pixConfig.chave || '')}" /></div>
+            <div class="row2">
+              <div class="field"><label>Nome do recebedor</label><input id="pix-nome" placeholder="Seu nome ou do clube" value="${esc(pixConfig.nome || '')}" /></div>
+              <div class="field"><label>Cidade</label><input id="pix-cidade" placeholder="Ex: Tuparendi" value="${esc(pixConfig.cidade || '')}" /></div>
+            </div>
+            <button class="btn-primary" data-action="pix-salvar">Salvar chave Pix</button>
+            <div class="hint" style="text-align:left">${pixConfig.chave ? '✓ Chave Pix configurada — os QR Codes de cobrança já usam esses dados.' : '⚠ Sem chave Pix configurada, torneios com valor de inscrição não conseguem gerar QR Code.'}</div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:20px">
           <div class="card-head-static">+ Criar novo torneio</div>
           <div class="card-body">
             <div class="field"><label>Nome do torneio</label><input id="novo-torneio-nome" placeholder="Ex: Torneio de Verão" /></div>
@@ -797,6 +895,11 @@ function renderCentralGestao(ativos, encerrados) {
               </div>
             </div>
             <div class="field"><label>Quantidade de quadras</label><input type="number" min="1" max="20" id="novo-torneio-quadras" value="2" /></div>
+            <div class="field">
+              <label>Valor da inscrição (R$) — opcional</label>
+              <input type="number" min="0" step="0.01" id="novo-torneio-valor" placeholder="0,00 = torneio gratuito" />
+              <div class="hint" style="text-align:left;margin-top:4px">No "Torneio" (chaves), o valor é sempre cobrado por dupla inteira. No Americano/Americano + Final, é por atleta.</div>
+            </div>
             <button class="btn-primary" data-action="criar-torneio" data-tipo="americano">Criar e abrir</button>
           </div>
         </div>
@@ -875,12 +978,15 @@ function renderInscricaoPublica() {
   const catKey = currentCategoria();
   const catLabelTxt = state.categorias.length ? ` — ${esc(catLabel(catKey) || 'Geral')}` : '';
   const flashMsg = pubSignupFlash ? `<div class="signup-ok">${esc(pubSignupFlash)}</div>` : '';
+  const temValor = state.valorInscricao > 0;
+  const avisoValor = temValor ? `<div class="hint" style="text-align:left;margin-bottom:8px">💰 Inscrição: <strong>${formatMoeda(state.valorInscricao)}</strong>${state.tipo === 'chaves' ? ' por dupla (mesmo sem parceiro(a) ainda)' : ' por atleta'}. Ao inscrever, aparece o QR Code Pix pra pagar — a inscrição fica pendente até o pagamento ser confirmado.</div>` : '';
   if (state.tipo === 'chaves') {
     return `
     <section class="card signup-card">
       <div class="card-body">
         <div class="field">
           <label>📝 Inscreva sua dupla${catLabelTxt}</label>
+          ${avisoValor}
           <input id="pub-team-j1" placeholder="Seu nome" style="margin-bottom:8px" list="atletas-datalist" />
           <input id="pub-team-tel1" type="tel" placeholder="Seu telefone (whatsapp)" style="margin-bottom:8px" />
           <label class="checkbox-row"><input type="checkbox" id="pub-team-sem-parceiro" data-action="toggle-sem-parceiro-pub" /> Estou sem parceiro(a) — procurando dupla</label>
@@ -899,6 +1005,7 @@ function renderInscricaoPublica() {
       <div class="card-body">
         <div class="field">
           <label>📝 Inscreva-se${catLabelTxt}</label>
+          ${avisoValor}
           <input id="pub-player-name" placeholder="Seu nome" style="margin-bottom:8px" list="atletas-datalist" />
           <div class="row"><input id="pub-player-phone" type="tel" placeholder="Telefone (whatsapp)" /><button data-action="pub-add-player">Inscrever</button></div>
           ${flashMsg}
@@ -906,9 +1013,57 @@ function renderInscricaoPublica() {
       </div>
     </section>`;
 }
+// Card de pagamento Pix — abre sozinho logo após a inscrição (quando o torneio tem valor) e também pode
+// ser reaberto clicando em "Pagar" na lista de inscritas, pra quem fechou sem pagar ainda.
+function renderPagamentoCard() {
+  if (!pubPagamentoAtivo) return '';
+  const { list, id } = pubPagamentoAtivo;
+  const registro = (state[list] || []).find((x) => x.id === id);
+  if (!registro || !(Number(registro.valor) > 0) || registro.statusPagamento === 'pago') return '';
+  const valor = Number(registro.valor);
+  const aguardando = registro.statusPagamento === 'aguardando_confirmacao';
+  // mpPaymentId só existe quando a Cloud Function conseguiu criar a cobrança de verdade no Mercado
+  // Pago — se essa inscrição ficou no fallback local (aplicarPixFallbackLocal), esse campo nunca é setado.
+  const automatico = !!registro.mpPaymentId;
+  return `
+  <section class="card signup-card" style="border-color:var(--yellow)">
+    <div class="card-body">
+      <div class="field">
+        <label>💳 Pagamento — ${esc(registro.name)}</label>
+        <div class="hint" style="text-align:left;margin-bottom:4px">Valor: <strong>${formatMoeda(valor)}</strong></div>
+        <div class="hint" style="text-align:left;margin-bottom:8px">${
+          aguardando ? '🕓 Avisamos o organizador que você já pagou — assim que ele confirmar, sua inscrição vira confirmada.'
+          : automatico ? '⚡ Assim que o Pix cair, sua inscrição é confirmada automaticamente — não precisa fazer mais nada.'
+          : 'Pague pelo Pix abaixo. Sua inscrição fica pendente até o organizador confirmar o pagamento.'
+        }</div>
+        ${pubPagamentoCarregando ? `<div class="hint" style="text-align:left">Gerando cobrança Pix...</div>` : ''}
+        ${!pubPagamentoCarregando && pubPagamentoErroMsg ? `
+          <div class="hint hint-alerta" style="text-align:left;margin-bottom:8px">${esc(pubPagamentoErroMsg)}</div>
+          <button class="mode-btn" data-action="pub-ver-pix" data-list="${list}" data-id="${id}" data-valor="${valor}" data-nome="${esc(registro.name)}">Tentar de novo</button>
+        ` : ''}
+        ${!pubPagamentoCarregando && registro.pixQrCode ? `
+        <div class="pix-qr-wrap"><canvas data-pix-qr="${esc(registro.pixQrCode)}" width="220" height="220"></canvas></div>
+        <label>Pix Copia e Cola</label>
+        <textarea readonly class="pix-copia-cola" id="pix-copia-cola-${esc(id)}">${esc(registro.pixQrCode)}</textarea>
+        <button class="mode-btn" data-action="copiar-pix" data-texto="${esc(registro.pixQrCode)}" style="margin-top:6px">📋 Copiar código Pix</button>
+        ` : ''}
+        ${!aguardando ? `<button class="${automatico ? 'mode-btn' : 'btn-primary'}" style="margin-top:10px" data-action="pub-declarar-pago" data-list="${list}" data-id="${id}">${automatico ? 'Já paguei e não confirmou? Avisar organizador' : '✅ Já paguei'}</button>` : ''}
+        <button class="mode-btn" style="margin-top:6px" data-action="pub-fechar-pagamento">Fechar</button>
+      </div>
+    </div>
+  </section>`;
+}
 
+function renderStatusPublico(x, listKey) {
+  if (!(state.valorInscricao > 0)) return x.confirmada ? '<span class="badge-ok">✓</span>' : '<span class="badge-pending">⏳</span>';
+  const status = x.statusPagamento || 'pendente';
+  if (status === 'pago') return '<span class="badge-ok">✓ pago</span>';
+  if (status === 'aguardando_confirmacao') return '<span class="badge-pending">🕓 aguardando confirmação</span>';
+  return `<span class="badge-pending">⏳ pendente</span> <button class="mode-btn" style="padding:3px 8px;font-size:11px" data-action="pub-ver-pix" data-list="${listKey}" data-id="${x.id}" data-valor="${Number(x.valor) || 0}" data-nome="${esc(x.name)}">Pagar</button>`;
+}
 function renderInscritosPublico(catKey) {
-  const list = state.tipo === 'chaves' ? state.teams : state.players;
+  const listKey = state.tipo === 'chaves' ? 'teams' : 'players';
+  const list = state[listKey];
   const catList = list.filter((x) => categoriaOf(x) === catKey && !x.oculto).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
   if (!catList.length) return '';
   return `
@@ -920,7 +1075,7 @@ function renderInscritosPublico(catKey) {
       ${inscritosVisiveis ? `
       <div class="card-body">
         <div class="inscritos-grid">
-          ${catList.map((x) => `<div class="inscrito-item">${esc(x.name)} ${x.confirmada ? '<span class="badge-ok">✓</span>' : '<span class="badge-pending">⏳</span>'}</div>`).join('')}
+          ${catList.map((x) => `<div class="inscrito-item">${esc(x.name)} ${renderStatusPublico(x, listKey)}</div>`).join('')}
         </div>
       </div>` : ''}
     </section>`;
@@ -1089,7 +1244,7 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
       <div class="dash-grid">
         <button class="dash-card" data-action="abrir-painel" data-painel="config">
           <div class="dash-title">Configurações</div>
-          <div class="dash-sub">${esc(tipoLabel)}${state.categorias.length ? ` · ${state.categorias.length} categoria(s)` : ''}</div>
+          <div class="dash-sub">${esc(tipoLabel)}${state.categorias.length ? ` · ${state.categorias.length} categoria(s)` : ''}${state.valorInscricao > 0 ? ` · ${formatMoeda(state.valorInscricao)}` : ''}</div>
         </button>
         <button class="dash-card" data-action="abrir-painel" data-painel="quadras">
           <div class="dash-title">Quadras e Rodadas</div>
@@ -1176,6 +1331,14 @@ function renderConfigModulo() {
         ${state.tipo === 'chaves' ? 'Duplas fixas em chaves de 2 ou 3. As 2 melhores avançam pra eliminatória automaticamente. Desempate: vitórias → saldo de sets → confronto direto.' : ''}
       </div>
     </div>
+    <div class="field">
+      <label>Valor da inscrição (R$)</label>
+      <input type="number" min="0" step="0.01" id="config-valor-inscricao" value="${state.valorInscricao || ''}" placeholder="0,00 = grátis" data-action="set-valor-inscricao" />
+      <div class="hint" style="text-align:left;margin-top:4px">
+        ${state.tipo === 'chaves' ? 'Cobrado sempre o valor total da dupla, mesmo quando ela se inscreve "sem parceiro(a)".' : 'Cobrado por atleta (as duplas do Americano são sorteadas e mudam a cada rodada).'}
+        ${state.valorInscricao > 0 && !pixConfig.chave ? ' <span class="hint-alerta">⚠ Configure sua chave Pix na Central de Gestão pra gerar o QR Code de cobrança.</span>' : ''}
+      </div>
+    </div>
     ${renderCategoriasSetup()}
     <div class="field"><label>Login de admin</label><div class="hint" style="text-align:left">Gerenciado no Firebase Authentication.</div></div>
   `;
@@ -1260,15 +1423,37 @@ function renderCategoriasSetup() {
     </div>`;
 }
 
+// Badge de status (confirmação simples pra torneio grátis, ou status de pagamento pra torneio pago).
+// Reaproveita o campo "confirmada" existente como resultado final: quando há valor, confirmada só vira
+// true junto com statusPagamento 'pago' — assim todo o resto do app (sorteio, chaveamento, contagens)
+// que já filtra por "confirmada" continua funcionando sem precisar tocar em mais nada.
+function renderStatusBadge(x, list) {
+  const acaoToggle = list === 'players' ? 'toggle-confirm-player' : 'toggle-confirm-team';
+  if (!(state.valorInscricao > 0)) {
+    return `<button class="conf-badge ${x.confirmada ? 'yes' : 'no'}" data-action="${acaoToggle}" data-id="${x.id}" title="${x.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${x.confirmada ? '✓' : '⏳'}</button>`;
+  }
+  const status = x.statusPagamento || 'pendente';
+  if (status === 'pago') return `<button class="pag-badge pago" data-action="desmarcar-pago" data-list="${list}" data-id="${x.id}" title="Pago — clique pra desfazer">✓ pago</button>`;
+  if (status === 'aguardando_confirmacao') return `<button class="pag-badge aguardando" data-action="marcar-pago" data-list="${list}" data-id="${x.id}" title="Atleta avisou que pagou — clique pra confirmar">🕓 confirmar pagamento?</button>`;
+  return `<button class="pag-badge pendente" data-action="marcar-pago" data-list="${list}" data-id="${x.id}" title="Pendente — clique pra marcar como pago">⏳ marcar pago</button>`;
+}
+function renderResumoPagamentos(lista, tipoLabel) {
+  if (!(state.valorInscricao > 0)) return '';
+  const pagos = lista.filter((x) => x.statusPagamento === 'pago').length;
+  const aguardando = lista.filter((x) => x.statusPagamento === 'aguardando_confirmacao').length;
+  const pendentes = lista.length - pagos - aguardando;
+  return `<div class="hint" style="text-align:left;margin-bottom:8px">💰 ${formatMoeda(state.valorInscricao)} por ${tipoLabel} — ${pagos} pago(s)${aguardando ? `, ${aguardando} aguardando confirmação` : ''}${pendentes ? `, ${pendentes} pendente(s)` : ''}.</div>`;
+}
 function renderPlayersSetup(minRounds) {
   const showCatSelect = state.categorias.length > 0;
   const pendentes = state.players.filter((p) => !p.confirmada).length;
   return `
     <div class="field">
       <label>Jogadoras (${state.players.length})</label>
-      ${pendentes > 0 ? `<button class="mode-btn" data-action="confirmar-todas-jogadoras" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
+      ${renderResumoPagamentos(state.players, 'atleta')}
+      ${pendentes > 0 && !(state.valorInscricao > 0) ? `<button class="mode-btn" data-action="confirmar-todas-jogadoras" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
       <div class="chips">
-        ${state.players.map((p) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} <button class="conf-badge ${p.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-player" data-id="${p.id}" title="${p.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${p.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}" data-nome="${esc(p.name)}">×</button></span>`).join('')}
+        ${state.players.map((p) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} ${renderStatusBadge(p, 'players')} <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}" data-nome="${esc(p.name)}">×</button></span>`).join('')}
       </div>
       <div class="row">
         <input id="new-player" placeholder="Nome da jogadora" list="atletas-datalist" />
@@ -1289,12 +1474,13 @@ function renderTeamsSetup() {
   return `
     <div class="field">
       <label>Duplas (${state.teams.length})</label>
-      ${pendentes > 0 ? `<button class="mode-btn" data-action="confirmar-todas-duplas" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
+      ${renderResumoPagamentos(state.teams, 'dupla')}
+      ${pendentes > 0 && !(state.valorInscricao > 0) ? `<button class="mode-btn" data-action="confirmar-todas-duplas" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
       <div class="chips">
         ${state.teams.map((t) => {
           const tel1 = t.telefone1 || t.telefone || '';
           const tel2 = t.telefone2 || '';
-          return `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''} <button class="conf-badge ${t.confirmada ? 'yes' : 'no'}" data-action="toggle-confirm-team" data-id="${t.id}" title="${t.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${t.confirmada ? '✓' : '⏳'}</button> <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}" data-nome="${esc(t.name)}">×</button></span>`;
+          return `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''} ${renderStatusBadge(t, 'teams')} <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}" data-nome="${esc(t.name)}">×</button></span>`;
         }).join('')}
       </div>
       <div class="row2">
@@ -1612,8 +1798,28 @@ function bindEvents() {
         return;
       }
       const quadras = document.getElementById('novo-torneio-quadras')?.value;
-      criarNovoTorneio(nome, el.dataset.tipo, quadras);
+      const valorInscricao = document.getElementById('novo-torneio-valor')?.value;
+      criarNovoTorneio(nome, el.dataset.tipo, quadras, valorInscricao);
     });
+    if (action === 'pix-salvar') el.addEventListener('click', pixSalvarHandler);
+    if (action === 'set-valor-inscricao') el.addEventListener('change', () => persist({ ...state, valorInscricao: Math.max(0, Number(el.value) || 0) }));
+    if (action === 'marcar-pago') el.addEventListener('click', () => marcarPagoHandler(el.dataset.list, el.dataset.id));
+    if (action === 'desmarcar-pago') el.addEventListener('click', () => desmarcarPagoHandler(el.dataset.list, el.dataset.id));
+    if (action === 'pub-declarar-pago') el.addEventListener('click', () => pubDeclararPagoHandler(el.dataset.list, el.dataset.id));
+    if (action === 'pub-ver-pix') el.addEventListener('click', () => {
+      const list = el.dataset.list, id = el.dataset.id;
+      const registro = (state[list] || []).find((x) => x.id === id);
+      if (registro && registro.pixQrCode) {
+        // já tem cobrança/QR gerado pra essa inscrição — só reabre o card, sem chamar o backend de novo
+        pubPagamentoAtivo = { list, id };
+        pubPagamentoErroMsg = null;
+        render();
+      } else {
+        iniciarPagamento(list, id, Number(el.dataset.valor) || 0, el.dataset.nome || (registro && registro.name) || '');
+      }
+    });
+    if (action === 'pub-fechar-pagamento') el.addEventListener('click', () => { pubPagamentoAtivo = null; pubPagamentoErroMsg = null; render(); });
+    if (action === 'copiar-pix') el.addEventListener('click', () => copiarPixHandler(el.dataset.texto));
     if (action === 'lobby-set-status') el.addEventListener('change', () => { lobbyFiltroStatus = el.value; renderLobby(); });
     if (action === 'lobby-set-tipo') el.addEventListener('change', () => { lobbyFiltroTipo = el.value; renderLobby(); });
     if (action === 'set-tipo') el.addEventListener('click', () => setTipoHandler(el.dataset.tipo));
@@ -1787,6 +1993,7 @@ function bindEvents() {
       if (conhecido && conhecido.telefone) telEl.value = conhecido.telefone;
     });
   });
+  desenharQrCodesPix();
 }
 
 function bindPinModal() {
@@ -1853,13 +2060,19 @@ function removeCategoriaHandler(cat) {
   if (!confirm(`Remover a categoria "${cat}"? Jogadoras/duplas cadastradas nela continuam, mas sem categoria.`)) return;
   persist({ ...state, categorias: state.categorias.filter((c) => c !== cat) });
 }
+// Inscrição feita pelo próprio admin (ex: pagou em dinheiro no balcão) já entra confirmada/paga — se estiver
+// errado, ele pode desmarcar depois com o mesmo botão usado pra reverter qualquer confirmação de pagamento.
+function dadosPagamentoNaInscricao() {
+  const valor = Number(state.valorInscricao) || 0;
+  return valor > 0 ? { valor, statusPagamento: 'pago' } : {};
+}
 function addPlayerHandler() {
   const input = document.getElementById('new-player');
   const name = input.value.trim();
   if (!name) return;
   const catSelect = document.getElementById('new-player-cat');
   const categoria = catSelect ? catSelect.value : '';
-  persist({ ...state, players: [...state.players, { id: uid(), name, categoria, confirmada: true, oculto: false }] });
+  persist({ ...state, players: [...state.players, { id: uid(), name, categoria, confirmada: true, oculto: false, ...dadosPagamentoNaInscricao() }] });
   lembrarAtleta(name, '');
 }
 function addTeamHandler() {
@@ -1872,9 +2085,41 @@ function addTeamHandler() {
   const catSelect = document.getElementById('new-team-cat');
   const categoria = catSelect ? catSelect.value : '';
   const name = montarNomeDupla(j1, j2, semParceiro);
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: true, oculto: false }] });
+  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: true, oculto: false, ...dadosPagamentoNaInscricao() }] });
   lembrarAtleta(j1, tel1);
   if (j2) lembrarAtleta(j2, tel2);
+}
+// Fallback quando a cobrança automática (Mercado Pago) não está configurada ou falhou: gera o Pix
+// estático local com a chave da conta (config/pix) e grava direto — sem depender de nenhum backend.
+// Fica marcado como "modo manual" pra tela de pagamento saber que não vai confirmar sozinho.
+function aplicarPixFallbackLocal(list, id, valor) {
+  const payload = gerarPixPayload({ chave: pixConfig.chave, nome: pixConfig.nome, cidade: pixConfig.cidade, valor, txid: id });
+  persist({ ...state, [list]: state[list].map((x) => x.id === id ? { ...x, pixQrCode: payload, pixModoManual: true } : x) });
+}
+// Abre o card de pagamento e tenta criar uma cobrança Pix automática de verdade no Mercado Pago
+// (via Cloud Function). Se a função não estiver implantada/configurada, ou der erro, cai pro Pix
+// manual local (se a chave Pix da conta estiver configurada) — nunca trava a inscrição.
+async function iniciarPagamento(list, id, valor, nomeExibicao) {
+  pubPagamentoAtivo = { list, id };
+  pubPagamentoCarregando = true;
+  pubPagamentoErroMsg = null;
+  render();
+  try {
+    await criarCobrancaPixFn({ tournamentId: currentTournamentId, list, id, valor, descricao: `Inscrição — ${state.name} — ${nomeExibicao}` });
+    // sucesso: a própria Cloud Function já grava pixQrCode/mpPaymentId no registro — o listener em
+    // tempo real (onValue) vai trazer isso pro state sozinho, sem precisar de mais nada aqui. (Não
+    // fazemos nenhuma escrita extra pelo cliente nesse ponto pra não arriscar sobrescrever, com um
+    // "state" local ainda desatualizado, o que a função acabou de gravar no servidor.)
+  } catch (e) {
+    console.error('Cobrança automática indisponível, usando Pix manual como alternativa', e);
+    if (pixConfig.chave) {
+      aplicarPixFallbackLocal(list, id, valor);
+    } else {
+      pubPagamentoErroMsg = 'Não foi possível gerar o QR Code automaticamente, e o organizador ainda não configurou uma chave Pix reserva. Fale com o organizador pra combinar o pagamento.';
+    }
+  }
+  pubPagamentoCarregando = false;
+  render();
 }
 function pubAddPlayerHandler() {
   const nameInput = document.getElementById('pub-player-name');
@@ -1884,12 +2129,20 @@ function pubAddPlayerHandler() {
   if (!name || !telefone) { alert('Preencha nome e telefone pra se inscrever.'); return; }
   const catKey = currentCategoria();
   const categoria = catKey === DEFAULT_CAT ? '' : catKey;
-  persist({ ...state, players: [...state.players, { id: uid(), name, telefone, categoria, confirmada: false, oculto: false }] });
+  const valor = Number(state.valorInscricao) || 0;
+  const novoId = uid();
+  const novoJogador = { id: novoId, name, telefone, categoria, confirmada: false, oculto: false };
+  if (valor > 0) { novoJogador.valor = valor; novoJogador.statusPagamento = 'pendente'; }
+  persist({ ...state, players: [...state.players, novoJogador] });
   lembrarAtleta(name, telefone);
   nameInput.value = ''; phoneInput.value = '';
-  pubSignupFlash = `"${name}" inscrita(o) ✓ (aguardando confirmação do organizador)`;
-  render();
-  setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
+  if (valor > 0) {
+    iniciarPagamento('players', novoId, valor, name);
+  } else {
+    pubSignupFlash = `"${name}" inscrita(o) ✓ (aguardando confirmação do organizador)`;
+    render();
+    setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
+  }
 }
 function pubAddTeamHandler() {
   const j1 = document.getElementById('pub-team-j1').value.trim();
@@ -1902,7 +2155,12 @@ function pubAddTeamHandler() {
   const catKey = currentCategoria();
   const categoria = catKey === DEFAULT_CAT ? '' : catKey;
   const name = montarNomeDupla(j1, j2, semParceiro);
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: false, oculto: false }] });
+  // Dupla é sempre cobrada pelo valor cheio, mesmo "sem parceiro(a)" — não existe cobrança "meia dupla".
+  const valor = Number(state.valorInscricao) || 0;
+  const novoId = uid();
+  const novaDupla = { id: novoId, name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: false, oculto: false };
+  if (valor > 0) { novaDupla.valor = valor; novaDupla.statusPagamento = 'pendente'; }
+  persist({ ...state, teams: [...state.teams, novaDupla] });
   lembrarAtleta(j1, tel1);
   if (j2) lembrarAtleta(j2, tel2);
   document.getElementById('pub-team-j1').value = '';
@@ -1910,9 +2168,13 @@ function pubAddTeamHandler() {
   document.getElementById('pub-team-j2').value = '';
   document.getElementById('pub-team-tel2').value = '';
   document.getElementById('pub-team-sem-parceiro').checked = false;
-  pubSignupFlash = `"${name}" inscrita ✓ (aguardando confirmação do organizador)`;
-  render();
-  setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
+  if (valor > 0) {
+    iniciarPagamento('teams', novoId, valor, name);
+  } else {
+    pubSignupFlash = `"${name}" inscrita ✓ (aguardando confirmação do organizador)`;
+    render();
+    setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
+  }
 }
 function toggleConfirmHandler(list, id) {
   const key = list === 'players' ? 'players' : 'teams';
@@ -1921,6 +2183,24 @@ function toggleConfirmHandler(list, id) {
 function toggleOcultoHandler(list, id) {
   const key = list === 'players' ? 'players' : 'teams';
   persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, oculto: !x.oculto } : x) });
+}
+// Marcar como pago (admin) — usado tanto pra confirmar manualmente uma inscrição pendente quanto pra
+// aprovar uma autodeclaração ("já paguei") do atleta. Também liga "confirmada", que é o campo que o
+// resto do app (sorteio, chaveamento) já usa pra saber quem participa de fato.
+function marcarPagoHandler(list, id) {
+  const key = list === 'players' ? 'players' : 'teams';
+  persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, statusPagamento: 'pago', confirmada: true } : x) });
+}
+// Desfaz um pagamento confirmado, ou rejeita uma autodeclaração que não bateu com o extrato — volta pra pendente.
+function desmarcarPagoHandler(list, id) {
+  const key = list === 'players' ? 'players' : 'teams';
+  persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, statusPagamento: 'pendente', confirmada: false } : x) });
+}
+// Autodeclaração do próprio atleta/dupla ("já paguei") — fica "aguardando confirmação", NÃO confirma
+// sozinha. Só quando o organizador aprova (marcarPagoHandler) é que a inscrição vira confirmada de fato.
+function pubDeclararPagoHandler(list, id) {
+  const key = list === 'players' ? 'players' : 'teams';
+  persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, statusPagamento: 'aguardando_confirmacao' } : x) });
 }
 function agendamentosAutoParaRounds(roundsPorCategoria, dataInput, horaInput, duracao, agendamentosBase) {
   const agendamentos = { ...agendamentosBase };
