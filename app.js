@@ -3,10 +3,12 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getDatabase, ref, onValue, set, get } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js';
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js';
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 const auth = getAuth(app);
+const storage = getStorage(app);
 // Cloud Function que cria a cobrança Pix de verdade no Mercado Pago (backend em /functions) — a
 // confirmação automática de pagamento (webhook) depende dela estar implantada e configurada.
 // Se não estiver (ou der erro), o app cai pro Pix local estático (config/pix) com confirmação manual.
@@ -340,6 +342,8 @@ let pixConfig = { chave: '', nome: '', cidade: '' }; // config/pix — uma chave
 let pubPagamentoAtivo = null; // { list: 'players'|'teams', id } — controla o card de pagamento aberto na tela pública após inscrição
 let pubPagamentoCarregando = false; // true enquanto espera a Cloud Function criar a cobrança no Mercado Pago
 let pubPagamentoErroMsg = null; // mensagem de erro se nem a cobrança automática nem o Pix manual deram certo
+let pubComprovanteEnviando = false; // true enquanto o comprovante está subindo pro Storage
+let pubComprovanteErroMsg = null; // erro do envio do comprovante
 
 const root = document.getElementById('root');
 
@@ -364,6 +368,8 @@ function selecionarTorneio(id) {
   pubPagamentoAtivo = null;
   pubPagamentoCarregando = false;
   pubPagamentoErroMsg = null;
+  pubComprovanteEnviando = false;
+  pubComprovanteErroMsg = null;
   const url = new URL(window.location.href);
   if (id) url.searchParams.set('t', id); else url.searchParams.delete('t');
   window.history.pushState({}, '', url);
@@ -1047,7 +1053,15 @@ function renderPagamentoCard() {
         <textarea readonly class="pix-copia-cola" id="pix-copia-cola-${esc(id)}">${esc(registro.pixQrCode)}</textarea>
         <button class="mode-btn" data-action="copiar-pix" data-texto="${esc(registro.pixQrCode)}" style="margin-top:6px">📋 Copiar código Pix</button>
         ` : ''}
-        ${!aguardando ? `<button class="${automatico ? 'mode-btn' : 'btn-primary'}" style="margin-top:10px" data-action="pub-declarar-pago" data-list="${list}" data-id="${id}">${automatico ? 'Já paguei e não confirmou? Avisar organizador' : '✅ Já paguei'}</button>` : ''}
+        ${!automatico && !pubPagamentoCarregando ? `
+        <label style="margin-top:12px">📎 Anexar comprovante do Pix (foto ou PDF)</label>
+        <div class="hint" style="text-align:left;margin-bottom:6px">Pague, tire um print ou foto do comprovante e anexe aqui — o organizador confere e confirma sua inscrição manualmente.</div>
+        <input type="file" accept="image/*,application/pdf" id="comprovante-input-${esc(id)}" style="margin-bottom:8px" />
+        <button class="btn-primary" data-action="enviar-comprovante" data-list="${list}" data-id="${id}" ${pubComprovanteEnviando ? 'disabled' : ''}>${pubComprovanteEnviando ? 'Enviando...' : '📎 Enviar comprovante'}</button>
+        ${pubComprovanteErroMsg ? `<div class="hint hint-alerta" style="text-align:left;margin-top:4px">${esc(pubComprovanteErroMsg)}</div>` : ''}
+        ${registro.comprovantePath ? `<div class="hint" style="text-align:left;margin-top:6px">✓ Comprovante enviado — aguardando o organizador conferir.</div>` : ''}
+        ` : ''}
+        ${!aguardando ? `<button class="mode-btn" style="margin-top:10px" data-action="pub-declarar-pago" data-list="${list}" data-id="${id}">${automatico ? 'Já paguei e não confirmou? Avisar organizador' : 'Já paguei sem anexar comprovante'}</button>` : ''}
         <button class="mode-btn" style="margin-top:6px" data-action="pub-fechar-pagamento">Fechar</button>
       </div>
     </div>
@@ -1427,15 +1441,20 @@ function renderCategoriasSetup() {
 // Reaproveita o campo "confirmada" existente como resultado final: quando há valor, confirmada só vira
 // true junto com statusPagamento 'pago' — assim todo o resto do app (sorteio, chaveamento, contagens)
 // que já filtra por "confirmada" continua funcionando sem precisar tocar em mais nada.
+function renderComprovanteLink(x) {
+  if (!x.comprovantePath) return '';
+  return ` <button class="mode-btn" style="padding:3px 8px;font-size:11px" data-action="ver-comprovante" data-caminho="${esc(x.comprovantePath)}" title="Abrir o comprovante anexado">📎 ver comprovante</button>`;
+}
 function renderStatusBadge(x, list) {
   const acaoToggle = list === 'players' ? 'toggle-confirm-player' : 'toggle-confirm-team';
   if (!(state.valorInscricao > 0)) {
     return `<button class="conf-badge ${x.confirmada ? 'yes' : 'no'}" data-action="${acaoToggle}" data-id="${x.id}" title="${x.confirmada ? 'Confirmada — clique pra marcar como pendente' : 'Pendente — clique pra confirmar'}">${x.confirmada ? '✓' : '⏳'}</button>`;
   }
   const status = x.statusPagamento || 'pendente';
-  if (status === 'pago') return `<button class="pag-badge pago" data-action="desmarcar-pago" data-list="${list}" data-id="${x.id}" title="Pago — clique pra desfazer">✓ pago</button>`;
-  if (status === 'aguardando_confirmacao') return `<button class="pag-badge aguardando" data-action="marcar-pago" data-list="${list}" data-id="${x.id}" title="Atleta avisou que pagou — clique pra confirmar">🕓 confirmar pagamento?</button>`;
-  return `<button class="pag-badge pendente" data-action="marcar-pago" data-list="${list}" data-id="${x.id}" title="Pendente — clique pra marcar como pago">⏳ marcar pago</button>`;
+  const comprovante = renderComprovanteLink(x);
+  if (status === 'pago') return `<button class="pag-badge pago" data-action="desmarcar-pago" data-list="${list}" data-id="${x.id}" title="Pago — clique pra desfazer">✓ pago</button>${comprovante}`;
+  if (status === 'aguardando_confirmacao') return `<button class="pag-badge aguardando" data-action="marcar-pago" data-list="${list}" data-id="${x.id}" title="Atleta avisou que pagou — clique pra confirmar">🕓 confirmar pagamento?</button>${comprovante}`;
+  return `<button class="pag-badge pendente" data-action="marcar-pago" data-list="${list}" data-id="${x.id}" title="Pendente — clique pra marcar como pago">⏳ marcar pago</button>${comprovante}`;
 }
 function renderResumoPagamentos(lista, tipoLabel) {
   if (!(state.valorInscricao > 0)) return '';
@@ -1806,6 +1825,13 @@ function bindEvents() {
     if (action === 'marcar-pago') el.addEventListener('click', () => marcarPagoHandler(el.dataset.list, el.dataset.id));
     if (action === 'desmarcar-pago') el.addEventListener('click', () => desmarcarPagoHandler(el.dataset.list, el.dataset.id));
     if (action === 'pub-declarar-pago') el.addEventListener('click', () => pubDeclararPagoHandler(el.dataset.list, el.dataset.id));
+    if (action === 'enviar-comprovante') el.addEventListener('click', () => {
+      const input = document.getElementById(`comprovante-input-${el.dataset.id}`);
+      const file = input?.files?.[0];
+      if (!file) { pubComprovanteErroMsg = 'Escolha um arquivo primeiro.'; render(); return; }
+      enviarComprovanteHandler(el.dataset.list, el.dataset.id, file);
+    });
+    if (action === 'ver-comprovante') el.addEventListener('click', () => verComprovanteHandler(el.dataset.caminho));
     if (action === 'pub-ver-pix') el.addEventListener('click', () => {
       const list = el.dataset.list, id = el.dataset.id;
       const registro = (state[list] || []).find((x) => x.id === id);
@@ -1818,7 +1844,7 @@ function bindEvents() {
         iniciarPagamento(list, id, Number(el.dataset.valor) || 0, el.dataset.nome || (registro && registro.name) || '');
       }
     });
-    if (action === 'pub-fechar-pagamento') el.addEventListener('click', () => { pubPagamentoAtivo = null; pubPagamentoErroMsg = null; render(); });
+    if (action === 'pub-fechar-pagamento') el.addEventListener('click', () => { pubPagamentoAtivo = null; pubPagamentoErroMsg = null; pubComprovanteErroMsg = null; render(); });
     if (action === 'copiar-pix') el.addEventListener('click', () => copiarPixHandler(el.dataset.texto));
     if (action === 'lobby-set-status') el.addEventListener('change', () => { lobbyFiltroStatus = el.value; renderLobby(); });
     if (action === 'lobby-set-tipo') el.addEventListener('change', () => { lobbyFiltroTipo = el.value; renderLobby(); });
@@ -2120,6 +2146,65 @@ async function iniciarPagamento(list, id, valor, nomeExibicao) {
   }
   pubPagamentoCarregando = false;
   render();
+}
+// Redimensiona/comprime uma imagem no navegador antes de subir (economiza dados do celular de quem
+// tá se inscrevendo e espaço no Storage). PDF passa direto, sem mexer.
+function comprimirImagemSeForImagem(file) {
+  if (!file.type.startsWith('image/')) return Promise.resolve(file);
+  return new Promise((resolve) => {
+    const imgUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const maxLado = 1400;
+      const escala = Math.min(1, maxLado / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * escala);
+      canvas.height = Math.round(img.height * escala);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(imgUrl);
+      canvas.toBlob((blob) => resolve(blob || file), 'image/jpeg', 0.8);
+    };
+    img.onerror = () => { URL.revokeObjectURL(imgUrl); resolve(file); }; // se der ruim, sobe o original
+    img.src = imgUrl;
+  });
+}
+// Sobe o comprovante (print/PDF do Pix) pro Storage e marca a inscrição como "aguardando
+// confirmação" — o admin confere o comprovante e confirma manualmente (sem taxa nenhuma de gateway).
+async function enviarComprovanteHandler(list, id, file) {
+  if (!file) return;
+  const tipoOk = file.type.startsWith('image/') || file.type === 'application/pdf';
+  if (!tipoOk) { pubComprovanteErroMsg = 'Envie uma foto/print ou um PDF do comprovante.'; render(); return; }
+  if (file.size > 8 * 1024 * 1024) { pubComprovanteErroMsg = 'Arquivo muito grande (máx. 8 MB).'; render(); return; }
+  pubComprovanteEnviando = true;
+  pubComprovanteErroMsg = null;
+  render();
+  try {
+    const arquivo = await comprimirImagemSeForImagem(file);
+    const extensao = file.type === 'application/pdf' ? 'pdf' : 'jpg';
+    const caminho = `comprovantes/${currentTournamentId}/${list}__${id}__${Date.now()}.${extensao}`;
+    await uploadBytes(storageRef(storage, caminho), arquivo, { contentType: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg' });
+    const registro = (state[list] || []).find((x) => x.id === id);
+    const patch = { comprovantePath: caminho, comprovanteEnviadoEm: Date.now() };
+    if (registro && registro.statusPagamento !== 'pago') patch.statusPagamento = 'aguardando_confirmacao';
+    persist({ ...state, [list]: state[list].map((x) => x.id === id ? { ...x, ...patch } : x) });
+  } catch (e) {
+    console.error('Falha ao enviar comprovante', e);
+    pubComprovanteErroMsg = 'Não foi possível enviar o comprovante agora. Tente de novo em instantes.';
+  }
+  pubComprovanteEnviando = false;
+  render();
+}
+// Admin: pede a URL de download só na hora do clique (a regra do Storage só libera pra quem tá
+// logado) e abre numa aba nova — evita guardar um link "público pra sempre" em qualquer lugar.
+async function verComprovanteHandler(caminho) {
+  try {
+    const url = await getDownloadURL(storageRef(storage, caminho));
+    window.open(url, '_blank');
+  } catch (e) {
+    console.error('Falha ao abrir comprovante', e);
+    alert('Não foi possível abrir o comprovante agora. Tente de novo.');
+  }
 }
 function pubAddPlayerHandler() {
   const nameInput = document.getElementById('pub-player-name');
