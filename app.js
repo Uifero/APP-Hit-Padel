@@ -50,6 +50,8 @@ function defaultState() {
     encerrado: false,
     agendamentos: {},   // { [matchId]: { data, hora } }
     valorInscricao: 0,  // R$ — 0/vazio = torneio gratuito. No tipo 'chaves' é sempre por dupla; nos demais, por atleta.
+    limiteInscritos: 0, // legado (limite único pra todas as categorias) — mantido só como fallback pra torneios configurados antes de existir o limite por categoria.
+    limitesPorCategoria: {}, // { [categoria]: limite } — 0/vazio = sem limite naquela categoria. Ao bater o limite, novas inscrições entram na fila de espera.
   };
 }
 
@@ -1026,19 +1028,26 @@ function renderStatusPublico(x, listKey) {
 function renderInscritosPublico(catKey) {
   const listKey = state.tipo === 'chaves' ? 'teams' : 'players';
   const list = state[listKey];
-  const catList = list.filter((x) => categoriaOf(x) === catKey && !x.oculto).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-  if (!catList.length) return '';
+  const ativos = list.filter((x) => categoriaOf(x) === catKey && !x.oculto && !x.filaEspera).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+  const espera = list.filter((x) => categoriaOf(x) === catKey && !x.oculto && x.filaEspera).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+  if (!ativos.length && !espera.length) return '';
   return `
     <section class="card">
       <div class="card-head-static inscritos-header" data-action="toggle-inscritos-publico">
-        <span>👥 Inscritas (${catList.length})</span>
+        <span>👥 Inscritas (${ativos.length}${espera.length ? ` · ${espera.length} na fila de espera` : ''})</span>
         <span class="round-toggle-icon">${inscritosVisiveis ? '▲ ocultar' : '▼ mostrar'}</span>
       </div>
       ${inscritosVisiveis ? `
       <div class="card-body">
-        <div class="inscritos-grid">
-          ${catList.map((x) => `<div class="inscrito-item">${esc(x.name)} ${renderStatusPublico(x, listKey)}</div>`).join('')}
+        <div class="inscritos-lista">
+          ${ativos.map((x, i) => `<div class="inscrito-item"><span><span class="inscrito-item-num">${i + 1}.</span>${esc(x.name)}</span> ${renderStatusPublico(x, listKey)}</div>`).join('')}
         </div>
+        ${espera.length ? `
+        <div class="hint" style="text-align:left;margin-top:14px;margin-bottom:4px">🕓 Fila de espera — vagas lotadas, aguardando o organizador liberar</div>
+        <div class="inscritos-lista">
+          ${espera.map((x, i) => `<div class="inscrito-item"><span><span class="inscrito-item-num">${i + 1}.</span>${esc(x.name)}</span> <span class="badge-pending">🕓 fila de espera</span></div>`).join('')}
+        </div>
+        ` : ''}
       </div>` : ''}
     </section>`;
 }
@@ -1302,6 +1311,7 @@ function renderConfigModulo() {
       </div>
     </div>
     ${renderCategoriasSetup()}
+    ${renderLimitesPorCategoria()}
     <div class="field"><label>Login de admin</label><div class="hint" style="text-align:left">Gerenciado no Firebase Authentication.</div></div>
   `;
 }
@@ -1385,6 +1395,25 @@ function renderCategoriasSetup() {
     </div>`;
 }
 
+// Limite de vagas configurável por categoria (uma categoria pode ter mais vagas que outra). Sem
+// categorias cadastradas, mostra um único campo pra "Geral". Ao bater o limite de uma categoria,
+// as próximas inscrições daquela categoria entram na fila de espera (ver categoriaLotada()).
+function renderLimitesPorCategoria() {
+  const keys = categoriaKeys(state);
+  const unidade = state.tipo === 'chaves' ? 'duplas' : 'atletas';
+  return `
+    <div class="field">
+      <label>Limite de vagas por categoria (${unidade})</label>
+      <div class="hint" style="text-align:left;margin-bottom:8px">Deixe em branco/0 pra não ter limite naquela categoria. Ao bater o limite, novas inscrições entram na fila de espera até você aprovar.</div>
+      ${keys.map((k) => `
+        <div class="row" style="align-items:center;margin-top:0;margin-bottom:6px">
+          <span style="flex:1;font-size:14px">${esc(catLabel(k) || 'Geral')}</span>
+          <input type="number" min="0" step="1" style="flex:0 0 100px;min-width:70px" data-action="set-limite-categoria" data-cat="${esc(k)}" value="${limiteDaCategoria(k) || ''}" placeholder="sem limite" />
+        </div>
+      `).join('')}
+    </div>`;
+}
+
 // Badge de status (confirmação simples pra torneio grátis, ou status de pagamento pra torneio pago).
 // Reaproveita o campo "confirmada" existente como resultado final: quando há valor, confirmada só vira
 // true junto com statusPagamento 'pago' — assim todo o resto do app (sorteio, chaveamento, contagens)
@@ -1392,6 +1421,14 @@ function renderCategoriasSetup() {
 function renderComprovanteLink(x) {
   if (!x.comprovantePath) return '';
   return ` <button class="mode-btn" style="padding:3px 8px;font-size:11px" data-action="ver-comprovante" data-caminho="${esc(x.comprovantePath)}" title="Abrir o comprovante anexado">📎 ver comprovante</button>`;
+}
+// Mostra o status de pagamento de quem tá na fila de espera (sem os botões de marcar/desmarcar pago —
+// isso só faz sentido depois de aprovado), pra o admin já ver se a pessoa pagou antes de liberar a vaga.
+function renderStatusFilaEspera(x) {
+  if (!(state.valorInscricao > 0)) return '';
+  const status = x.statusPagamento || 'pendente';
+  const label = status === 'pago' ? '✓ pago' : status === 'aguardando_confirmacao' ? '🕓 aguardando confirmação' : '⏳ pendente';
+  return ` <span class="badge-pending">${label}</span>${renderComprovanteLink(x)}`;
 }
 function renderStatusBadge(x, list) {
   const acaoToggle = list === 'players' ? 'toggle-confirm-player' : 'toggle-confirm-team';
@@ -1413,15 +1450,23 @@ function renderResumoPagamentos(lista, tipoLabel) {
 }
 function renderPlayersSetup(minRounds) {
   const showCatSelect = state.categorias.length > 0;
-  const pendentes = state.players.filter((p) => !p.confirmada).length;
+  const ativos = state.players.filter((p) => !p.filaEspera);
+  const espera = state.players.filter((p) => p.filaEspera);
+  const pendentes = ativos.filter((p) => !p.confirmada).length;
   return `
     <div class="field">
-      <label>Jogadoras (${state.players.length})</label>
-      ${renderResumoPagamentos(state.players, 'atleta')}
+      <label>Jogadoras (${ativos.length}${espera.length ? ` · ${espera.length} na fila de espera` : ''})</label>
+      ${renderResumoPagamentos(ativos, 'atleta')}
       ${pendentes > 0 && !(state.valorInscricao > 0) ? `<button class="mode-btn" data-action="confirmar-todas-jogadoras" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
-      <div class="chips">
-        ${state.players.map((p) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}">${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} ${renderStatusBadge(p, 'players')} <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}" data-nome="${esc(p.name)}">×</button></span>`).join('')}
+      <div class="chips chips-lista">
+        ${ativos.map((p, i) => `<span class="chip ${p.oculto ? 'is-oculto' : ''}"><span class="chip-num">${i + 1}.</span>${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''} ${renderStatusBadge(p, 'players')} <button class="vis-badge" data-action="toggle-oculto-player" data-id="${p.id}" title="${p.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${p.oculto ? '🚫' : '👁'}</button> <button data-action="remove-player" data-id="${p.id}" data-nome="${esc(p.name)}">×</button></span>`).join('')}
       </div>
+      ${espera.length ? `
+      <div class="hint" style="text-align:left;margin-top:12px;margin-bottom:4px">🕓 Fila de espera — vagas lotadas nessa categoria, clique em "aprovar" pra liberar uma vaga</div>
+      <div class="chips chips-lista">
+        ${espera.map((p, i) => `<span class="chip">${i + 1}. ${esc(p.name)}${p.categoria ? ` <em>(${esc(p.categoria)})</em>` : ''}${p.telefone ? ` <span class="tel">📞${esc(p.telefone)}</span>` : ''}${renderStatusFilaEspera(p)} <button class="mode-btn" style="padding:3px 8px;font-size:11px" data-action="aprovar-fila-espera" data-list="players" data-id="${p.id}">✓ aprovar</button> <button data-action="remove-player" data-id="${p.id}" data-nome="${esc(p.name)}">×</button></span>`).join('')}
+      </div>
+      ` : ''}
       <div class="row">
         <input id="new-player" placeholder="Nome da jogadora" list="atletas-datalist" />
         ${showCatSelect ? `<select id="new-player-cat">${state.categorias.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>` : ''}
@@ -1437,19 +1482,31 @@ function montarNomeDupla(j1, j2, semParceiro) {
 
 function renderTeamsSetup() {
   const showCatSelect = state.categorias.length > 0;
-  const pendentes = state.teams.filter((t) => !t.confirmada).length;
+  const ativos = state.teams.filter((t) => !t.filaEspera);
+  const espera = state.teams.filter((t) => t.filaEspera);
+  const pendentes = ativos.filter((t) => !t.confirmada).length;
   return `
     <div class="field">
-      <label>Duplas (${state.teams.length})</label>
-      ${renderResumoPagamentos(state.teams, 'dupla')}
+      <label>Duplas (${ativos.length}${espera.length ? ` · ${espera.length} na fila de espera` : ''})</label>
+      ${renderResumoPagamentos(ativos, 'dupla')}
       ${pendentes > 0 && !(state.valorInscricao > 0) ? `<button class="mode-btn" data-action="confirmar-todas-duplas" style="margin-bottom:8px">✓ Confirmar todas (${pendentes} pendente${pendentes > 1 ? 's' : ''})</button>` : ''}
-      <div class="chips">
-        ${state.teams.map((t) => {
+      <div class="chips chips-lista">
+        ${ativos.map((t, i) => {
           const tel1 = t.telefone1 || t.telefone || '';
           const tel2 = t.telefone2 || '';
-          return `<span class="chip ${t.oculto ? 'is-oculto' : ''}">${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''} ${renderStatusBadge(t, 'teams')} <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}" data-nome="${esc(t.name)}">×</button></span>`;
+          return `<span class="chip ${t.oculto ? 'is-oculto' : ''}"><span class="chip-num">${i + 1}.</span>${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''} ${renderStatusBadge(t, 'teams')} <button class="vis-badge" data-action="toggle-oculto-team" data-id="${t.id}" title="${t.oculto ? 'Oculta do público — clique pra mostrar' : 'Visível ao público — clique pra ocultar'}">${t.oculto ? '🚫' : '👁'}</button> <button data-action="remove-team" data-id="${t.id}" data-nome="${esc(t.name)}">×</button></span>`;
         }).join('')}
       </div>
+      ${espera.length ? `
+      <div class="hint" style="text-align:left;margin-top:12px;margin-bottom:4px">🕓 Fila de espera — vagas lotadas nessa categoria, clique em "aprovar" pra liberar uma vaga</div>
+      <div class="chips chips-lista">
+        ${espera.map((t, i) => {
+          const tel1 = t.telefone1 || t.telefone || '';
+          const tel2 = t.telefone2 || '';
+          return `<span class="chip">${i + 1}. ${esc(t.name)}${t.categoria ? ` <em>(${esc(t.categoria)})</em>` : ''}${tel1 ? ` <span class="tel">📞${esc(tel1)}</span>` : ''}${tel2 ? ` <span class="tel">📞${esc(tel2)}</span>` : ''}${renderStatusFilaEspera(t)} <button class="mode-btn" style="padding:3px 8px;font-size:11px" data-action="aprovar-fila-espera" data-list="teams" data-id="${t.id}">✓ aprovar</button> <button data-action="remove-team" data-id="${t.id}" data-nome="${esc(t.name)}">×</button></span>`;
+        }).join('')}
+      </div>
+      ` : ''}
       <div class="row2">
         <input id="new-team-j1" placeholder="Nome jogador(a) 1" list="atletas-datalist" />
         <input id="new-team-tel1" placeholder="Telefone 1 (opcional)" />
@@ -1770,9 +1827,15 @@ function bindEvents() {
     });
     if (action === 'pix-salvar') el.addEventListener('click', pixSalvarHandler);
     if (action === 'set-valor-inscricao') el.addEventListener('change', () => persist({ ...state, valorInscricao: Math.max(0, Number(el.value) || 0) }));
+    if (action === 'set-limite-categoria') el.addEventListener('change', () => {
+      const cat = el.dataset.cat;
+      const valor = Math.max(0, Math.floor(Number(el.value) || 0));
+      persist({ ...state, limitesPorCategoria: { ...(state.limitesPorCategoria || {}), [cat]: valor } });
+    });
     if (action === 'marcar-pago') el.addEventListener('click', () => marcarPagoHandler(el.dataset.list, el.dataset.id));
     if (action === 'desmarcar-pago') el.addEventListener('click', () => desmarcarPagoHandler(el.dataset.list, el.dataset.id));
     if (action === 'pub-declarar-pago') el.addEventListener('click', () => pubDeclararPagoHandler(el.dataset.list, el.dataset.id));
+    if (action === 'aprovar-fila-espera') el.addEventListener('click', () => aprovarFilaEsperaHandler(el.dataset.list, el.dataset.id));
     if (action === 'enviar-comprovante') el.addEventListener('click', () => {
       const input = document.getElementById(`comprovante-input-${el.dataset.id}`);
       const file = input?.files?.[0];
@@ -1822,8 +1885,8 @@ function bindEvents() {
     });
     if (action === 'toggle-confirm-player') el.addEventListener('click', () => toggleConfirmHandler('players', el.dataset.id));
     if (action === 'toggle-confirm-team') el.addEventListener('click', () => toggleConfirmHandler('teams', el.dataset.id));
-    if (action === 'confirmar-todas-jogadoras') el.addEventListener('click', () => persist({ ...state, players: state.players.map((p) => ({ ...p, confirmada: true })) }));
-    if (action === 'confirmar-todas-duplas') el.addEventListener('click', () => persist({ ...state, teams: state.teams.map((t) => ({ ...t, confirmada: true })) }));
+    if (action === 'confirmar-todas-jogadoras') el.addEventListener('click', () => persist({ ...state, players: state.players.map((p) => p.filaEspera ? p : { ...p, confirmada: true }) }));
+    if (action === 'confirmar-todas-duplas') el.addEventListener('click', () => persist({ ...state, teams: state.teams.map((t) => t.filaEspera ? t : { ...t, confirmada: true }) }));
     if (action === 'toggle-oculto-player') el.addEventListener('click', () => toggleOcultoHandler('players', el.dataset.id));
     if (action === 'toggle-oculto-team') el.addEventListener('click', () => toggleOcultoHandler('teams', el.dataset.id));
     if (action === 'add-player') el.addEventListener('click', addPlayerHandler);
@@ -2139,6 +2202,23 @@ async function verComprovanteHandler(caminho) {
     alert('Não foi possível abrir o comprovante agora. Tente de novo.');
   }
 }
+// Quantas vagas já estão ocupadas numa categoria — conta só quem NÃO está na fila de espera e não
+// foi ocultada/removida.
+function vagasOcupadas(listKey, catKey) {
+  return state[listKey].filter((x) => categoriaOf(x) === catKey && !x.oculto && !x.filaEspera).length;
+}
+// Limite configurado pra uma categoria específica. Se o admin nunca configurou nada pra essa
+// categoria, cai no antigo campo único (limiteInscritos) como fallback — assim torneios configurados
+// antes de existir o limite por categoria continuam funcionando do jeito que estavam.
+function limiteDaCategoria(catKey) {
+  const porCategoria = state.limitesPorCategoria || {};
+  if (Object.prototype.hasOwnProperty.call(porCategoria, catKey)) return Number(porCategoria[catKey]) || 0;
+  return Number(state.limiteInscritos) || 0;
+}
+function categoriaLotada(listKey, catKey) {
+  const limite = limiteDaCategoria(catKey);
+  return limite > 0 && vagasOcupadas(listKey, catKey) >= limite;
+}
 function pubAddPlayerHandler() {
   const nameInput = document.getElementById('pub-player-name');
   const phoneInput = document.getElementById('pub-player-phone');
@@ -2149,7 +2229,9 @@ function pubAddPlayerHandler() {
   const categoria = catKey === DEFAULT_CAT ? '' : catKey;
   const valor = Number(state.valorInscricao) || 0;
   const novoId = uid();
+  const filaEspera = categoriaLotada('players', catKey);
   const novoJogador = { id: novoId, name, telefone, categoria, confirmada: false, oculto: false };
+  if (filaEspera) novoJogador.filaEspera = true;
   if (valor > 0) { novoJogador.valor = valor; novoJogador.statusPagamento = 'pendente'; }
   persist({ ...state, players: [...state.players, novoJogador] });
   lembrarAtleta(name, telefone);
@@ -2157,7 +2239,7 @@ function pubAddPlayerHandler() {
   if (valor > 0) {
     abrirPagamento('players', novoId);
   } else {
-    pubSignupFlash = `"${name}" inscrita(o) ✓ (aguardando confirmação do organizador)`;
+    pubSignupFlash = filaEspera ? `"${name}" entrou na fila de espera 🕓 (vagas lotadas — avisamos se abrir uma vaga)` : `"${name}" inscrita(o) ✓ (aguardando confirmação do organizador)`;
     render();
     setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
   }
@@ -2176,7 +2258,9 @@ function pubAddTeamHandler() {
   // Dupla é sempre cobrada pelo valor cheio, mesmo "sem parceiro(a)" — não existe cobrança "meia dupla".
   const valor = Number(state.valorInscricao) || 0;
   const novoId = uid();
+  const filaEspera = categoriaLotada('teams', catKey);
   const novaDupla = { id: novoId, name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: false, oculto: false };
+  if (filaEspera) novaDupla.filaEspera = true;
   if (valor > 0) { novaDupla.valor = valor; novaDupla.statusPagamento = 'pendente'; }
   persist({ ...state, teams: [...state.teams, novaDupla] });
   lembrarAtleta(j1, tel1);
@@ -2189,10 +2273,16 @@ function pubAddTeamHandler() {
   if (valor > 0) {
     abrirPagamento('teams', novoId);
   } else {
-    pubSignupFlash = `"${name}" inscrita ✓ (aguardando confirmação do organizador)`;
+    pubSignupFlash = filaEspera ? `"${name}" entrou na fila de espera 🕓 (vagas lotadas — avisamos se abrir uma vaga)` : `"${name}" inscrita ✓ (aguardando confirmação do organizador)`;
     render();
     setTimeout(() => { pubSignupFlash = null; render(); }, 3500);
   }
+}
+// Admin: tira alguém da fila de espera e libera a vaga normal — a partir daí segue o fluxo comum
+// (pagamento/confirmação), como se tivesse se inscrito agora.
+function aprovarFilaEsperaHandler(list, id) {
+  const key = list === 'players' ? 'players' : 'teams';
+  persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, filaEspera: false } : x) });
 }
 function toggleConfirmHandler(list, id) {
   const key = list === 'players' ? 'players' : 'teams';
