@@ -2215,10 +2215,16 @@ async function verComprovanteHandler(caminho) {
     alert('Não foi possível abrir o comprovante agora. Tente de novo.');
   }
 }
-// Quantas vagas já estão ocupadas numa categoria — conta só quem NÃO está na fila de espera e não
-// foi ocultada/removida.
+// Só conta como vaga realmente ocupada quem já está confirmada de verdade: pagou (torneio pago) ou
+// foi confirmada pelo admin (torneio grátis). Quem ainda está "pendente"/"aguardando confirmação" não
+// trava vaga de ninguém — assim o limite reflete vagas garantidas, não só gente que demonstrou interesse.
+function vagaConfirmadaDe(x) {
+  return Number(state.valorInscricao) > 0 ? x.statusPagamento === 'pago' : !!x.confirmada;
+}
+// Quantas vagas já estão ocupadas numa categoria — conta só quem já confirmou de verdade, não está na
+// fila de espera, e não foi ocultada/removida.
 function vagasOcupadas(listKey, catKey) {
-  return state[listKey].filter((x) => categoriaOf(x) === catKey && !x.oculto && !x.filaEspera).length;
+  return state[listKey].filter((x) => categoriaOf(x) === catKey && !x.oculto && !x.filaEspera && vagaConfirmadaDe(x)).length;
 }
 // Limite configurado pra uma categoria específica. Se o admin nunca configurou nada pra essa
 // categoria, cai no antigo campo único (limiteInscritos) como fallback — assim torneios configurados
