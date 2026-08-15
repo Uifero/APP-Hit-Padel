@@ -1604,7 +1604,13 @@ function bindEvents() {
       document.querySelector('[data-action="criar-torneio"]').dataset.tipo = el.dataset.tipo;
     });
     if (action === 'criar-torneio') el.addEventListener('click', () => {
-      const nome = document.getElementById('novo-torneio-nome').value.trim();
+      const nomeInput = document.getElementById('novo-torneio-nome');
+      const nome = nomeInput.value.trim();
+      if (!nome) {
+        alert('Preencha o nome do torneio antes de criar.');
+        nomeInput.focus();
+        return;
+      }
       const quadras = document.getElementById('novo-torneio-quadras')?.value;
       criarNovoTorneio(nome, el.dataset.tipo, quadras);
     });
