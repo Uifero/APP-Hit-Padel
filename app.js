@@ -322,6 +322,12 @@ let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cada
 let unsubscribeTournament = null;
 let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
 let novoTorneioNome = '';
+let tvSlide = 0;
+let tvTimer = null;
+let lobbyFiltroTipo = 'todos';
+let mostrarAtletasConhecidos = false;
+let lobbyFiltroStatus = 'todos';
+let inscritosVisiveis = true;
 
 const root = document.getElementById('root');
 
@@ -471,17 +477,22 @@ function removerAtletaHandler(chave, nome) {
   set(ref(db, 'atletas/' + chave), null).catch((e) => console.error('Falha ao remover atleta', e));
 }
 
-onAuthStateChanged(auth, (user) => {
-  isAdmin = !!user;
-  render();
-});
-
 currentTournamentId = getUrlTournamentId();
 if (currentTournamentId) carregarTorneioAtual();
 window.addEventListener('popstate', () => {
   currentTournamentId = getUrlTournamentId();
   carregarTorneioAtual();
   render();
+});
+
+onAuthStateChanged(auth, (user) => {
+  const eraAdmin = isAdmin;
+  isAdmin = !!user;
+  if (isAdmin && !eraAdmin && currentTournamentId) {
+    selecionarTorneio(null); // sempre que vira admin (login manual ou sessão restaurada), volta pra Central de Gestão
+  } else {
+    render();
+  }
 });
 
 function nameOf(id) { return state.players.find((p) => p.id === id)?.name || '?'; }
@@ -607,8 +618,6 @@ function render() {
   bindEvents();
 }
 
-let tvSlide = 0;
-let tvTimer = null;
 function renderModoTV(catKey) {
   if (!tvTimer) tvTimer = setInterval(() => { tvSlide = (tvSlide + 1) % 2; render(); }, 8000);
   const catPlayers = state.players.filter((p) => categoriaOf(p) === catKey);
@@ -697,10 +706,6 @@ function renderModuloTipo(tipo, lista, isAdminView) {
     ${dessteTipo.length === 0 ? `<div class="hint">Nenhum torneio deste tipo ainda.</div>` : `<div class="groups-wrap">${dessteTipo.map((t) => renderTorneioCard(t)).join('')}</div>`}
   `;
 }
-
-let lobbyFiltroTipo = 'todos';
-let mostrarAtletasConhecidos = false;
-let lobbyFiltroStatus = 'todos';
 
 function renderChecklistPrimeirosPassos() {
   return `
@@ -902,7 +907,6 @@ function renderInscricaoPublica() {
     </section>`;
 }
 
-let inscritosVisiveis = true;
 function renderInscritosPublico(catKey) {
   const list = state.tipo === 'chaves' ? state.teams : state.players;
   const catList = list.filter((x) => categoriaOf(x) === catKey && !x.oculto).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
@@ -1816,7 +1820,7 @@ async function tryUnlock() {
     await setPersistence(auth, manterConectado ? browserLocalPersistence : browserSessionPersistence);
     await signInWithEmailAndPassword(auth, user.toLowerCase() + ADMIN_EMAIL_DOMAIN, pass);
     closePinModal();
-    selecionarTorneio(null);
+    // onAuthStateChanged já cuida de levar pra Central de Gestão quando vira admin
   } catch (e) {
     const err = document.getElementById('pin-error');
     if (err) err.textContent = 'Usuário ou senha incorretos';
