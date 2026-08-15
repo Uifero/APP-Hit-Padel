@@ -2102,8 +2102,14 @@ function addPlayerHandler() {
   if (!name) return;
   const catSelect = document.getElementById('new-player-cat');
   const categoria = catSelect ? catSelect.value : '';
+  const catKey = categoria || DEFAULT_CAT;
   const temValor = Number(state.valorInscricao) > 0;
-  persist({ ...state, players: [...state.players, { id: uid(), name, categoria, confirmada: !temValor, oculto: false, ...dadosPagamentoNaInscricao() }] });
+  // Mesmo cadastrando você mesmo (admin), se a categoria já bateu o limite de vagas, entra na fila de
+  // espera igual uma inscrição pública — o limite vale pra todo mundo, sem atalho por ser admin.
+  const filaEspera = categoriaLotada('players', catKey);
+  const novoJogador = { id: uid(), name, categoria, confirmada: !temValor && !filaEspera, oculto: false, ...dadosPagamentoNaInscricao() };
+  if (filaEspera) novoJogador.filaEspera = true;
+  persist({ ...state, players: [...state.players, novoJogador] });
   lembrarAtleta(name, '');
 }
 function addTeamHandler() {
@@ -2115,9 +2121,13 @@ function addTeamHandler() {
   const tel2 = semParceiro ? '' : document.getElementById('new-team-tel2').value.trim();
   const catSelect = document.getElementById('new-team-cat');
   const categoria = catSelect ? catSelect.value : '';
+  const catKey = categoria || DEFAULT_CAT;
   const name = montarNomeDupla(j1, j2, semParceiro);
   const temValor = Number(state.valorInscricao) > 0;
-  persist({ ...state, teams: [...state.teams, { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: !temValor, oculto: false, ...dadosPagamentoNaInscricao() }] });
+  const filaEspera = categoriaLotada('teams', catKey);
+  const novaDupla = { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: !temValor && !filaEspera, oculto: false, ...dadosPagamentoNaInscricao() };
+  if (filaEspera) novaDupla.filaEspera = true;
+  persist({ ...state, teams: [...state.teams, novaDupla] });
   lembrarAtleta(j1, tel1);
   if (j2) lembrarAtleta(j2, tel2);
 }
