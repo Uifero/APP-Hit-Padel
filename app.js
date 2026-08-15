@@ -73,13 +73,137 @@ function bestPairing(four, history) {
   options.forEach((o) => { const s = scoreGroup(o, history); if (s < bestScore) { bestScore = s; best = o; } });
   return best;
 }
+// ---------- construção garantida (múltiplos de 4, com quadras suficientes pra ninguém sentar) ----------
+// "Método do círculo": um algoritmo clássico de agenda round-robin. Fixa uma jogadora e gira as
+// demais numa roda; a cada rodada, forma as parcerias lendo pares opostos na roda. É matematicamente
+// comprovado que isso cobre TODAS as parcerias possíveis, exatamente 1 vez cada, em (n-1) rodadas —
+// não depende de sorteio, então zero dupla repetida é garantido, não só "bem provável".
+function gerarParceriasRoundRobin(playerIds) {
+  const n = playerIds.length;
+  const fixo = playerIds[n - 1];
+  let girando = playerIds.slice(0, n - 1);
+  const rodadas = [];
+  for (let r = 0; r < n - 1; r++) {
+    const arranjo = [fixo, ...girando];
+    const pares = [];
+    for (let i = 0; i < n / 2; i++) pares.push([arranjo[i], arranjo[n - 1 - i]]);
+    rodadas.push(pares);
+    girando = [girando[girando.length - 1], ...girando.slice(0, girando.length - 1)];
+  }
+  return rodadas;
+}
+// Todas as formas de dividir uma lista (tamanho par) em pares — usado pra listar toda opção possível
+// de "quem enfrenta quem" numa rodada, dado o conjunto de parcerias já fixado nela.
+function particoesEmPares(items) {
+  if (items.length === 0) return [[]];
+  const [first, ...rest] = items;
+  const resultado = [];
+  for (let i = 0; i < rest.length; i++) {
+    const parceiro = rest[i];
+    const restante = rest.slice(0, i).concat(rest.slice(i + 1));
+    for (const sub of particoesEmPares(restante)) resultado.push([[first, parceiro], ...sub]);
+  }
+  return resultado;
+}
+function coberturaDeConfrontos(confrontos) {
+  const s = new Set();
+  confrontos.forEach(([pA, pB]) => pA.forEach((x) => pB.forEach((y) => s.add(pairKey(x, y)))));
+  return s;
+}
+// Busca de verdade (com backtracking), não só tentativa gulosa: pra cada rodada existem poucas formas
+// de agrupar as parcerias em confrontos (3 formas pra 4 parcerias, 15 pra 6, 105 pra 8...), e testamos
+// as combinações entre rodadas até achar uma que cubra literalmente TODAS as duplas de adversárias —
+// se uma escolha travar mais adiante, ela desiste e tenta outra, em vez de só aceitar o melhor palpite
+// de cada rodada isolada (que pode nunca fechar cobertura total, mesmo quando ela existe).
+function buscarConfrontosCobrindoTudo(rodadasParcerias, playerIds, nodeLimit) {
+  const opcoesPerRound = rodadasParcerias.map((pares) => particoesEmPares(pares).sort(() => Math.random() - 0.5));
+  const allPairs = new Set();
+  for (let i = 0; i < playerIds.length; i++) for (let j = i + 1; j < playerIds.length; j++) allPairs.add(pairKey(playerIds[i], playerIds[j]));
+  const escolha = new Array(opcoesPerRound.length).fill(null);
+  const covered = new Set();
+  let nodes = 0;
+  function backtrack(idx) {
+    nodes++;
+    if (nodes > nodeLimit) return false;
+    if (idx === opcoesPerRound.length) return covered.size === allPairs.size;
+    const opts = opcoesPerRound[idx].map((opt) => {
+      const cov = coberturaDeConfrontos(opt);
+      let novos = 0;
+      cov.forEach((p) => { if (!covered.has(p)) novos++; });
+      return { opt, cov, novos };
+    }).sort((a, b) => b.novos - a.novos);
+    for (const { opt, cov } of opts) {
+      const added = [];
+      cov.forEach((p) => { if (!covered.has(p)) { covered.add(p); added.push(p); } });
+      escolha[idx] = opt;
+      if (backtrack(idx + 1)) return true;
+      added.forEach((p) => covered.delete(p));
+      escolha[idx] = null;
+    }
+    return false;
+  }
+  return backtrack(0) ? escolha : null;
+}
+// Gera as rodadas da construção garantida (até n-1 rodadas). Quando dá pra rodar o desenho completo
+// (numRounds >= n-1), busca com backtracking até fechar cobertura total de verdade — pra 4/8/12/16
+// jogadoras isso é rápido (poucos milissegundos) porque o espaço de busca por rodada é pequeno.
+function gerarRodadasGarantidas(players, numRounds) {
+  const playerIds = players.map((p) => p.id);
+  const n = playerIds.length;
+  const parceriasCompletas = gerarParceriasRoundRobin(playerIds);
+  const rodadasUsadas = parceriasCompletas.slice(0, Math.min(numRounds, n - 1));
+  const cobrirTudo = numRounds >= n - 1;
+  let escolha = null;
+  if (cobrirTudo) {
+    for (let tentativa = 0; tentativa < 5 && !escolha; tentativa++) {
+      escolha = buscarConfrontosCobrindoTudo(rodadasUsadas, playerIds, 400000);
+    }
+  }
+  const rounds = [];
+  rodadasUsadas.forEach((pares, idx) => {
+    // Sem cobertura total pedida (numRounds < n-1) ou busca não fechou (não deveria acontecer nesses
+    // tamanhos): usa o melhor palpite guloso pra essa rodada, só evitando repetir adversárias já vistas.
+    let grupos = escolha ? escolha[idx] : null;
+    if (!grupos) {
+      const opcoes = particoesEmPares(pares);
+      let melhorScore = Infinity;
+      opcoes.forEach((opt) => {
+        let score = 0;
+        opt.forEach(([pA, pB]) => { pA.forEach((x) => pB.forEach((y) => { score += rounds.some((rd) => rd.matches.some((m) => (m.teamA.includes(x) && m.teamB.includes(y)) || (m.teamA.includes(y) && m.teamB.includes(x)))) ? 1 : 0; })); });
+        if (score < melhorScore) { melhorScore = score; grupos = opt; }
+      });
+    }
+    rounds.push({ round: rounds.length + 1, byes: [], matches: grupos.map((g, i) => ({ id: uid(), court: i + 1, teamA: g[0], teamB: g[1], scoreA: null, scoreB: null })) });
+  });
+  return rounds;
+}
 function generateSchedule(players, numCourts, numRounds) {
   const history = { partner: {}, opponent: {} };
   const n = players.length;
   const ativosPorRodada = ativosPorRodadaReal(n, numCourts);
   const rounds = [];
   let cursor = 0;
-  for (let r = 0; r < numRounds; r++) {
+  // Quando dá pra usar a construção garantida (múltiplo de 4, ninguém fica de fora), usa ela pra
+  // gerar o máximo de rodadas possível sem repetir dupla nunca — só o excedente (além de n-1 rodadas,
+  // que já é o máximo matematicamente livre de repetição) continua pelo sorteio de sempre.
+  // Limitado a até 16 jogadoras: acima disso a quantidade de jeitos de agrupar parcerias em confrontos
+  // cresce rápido demais (fatorial) pra buscar com backtracking em tempo razoável no navegador — nesse
+  // caso cai pro sorteio de sempre, que já era o comportamento antes dessa melhoria.
+  if (n % 4 === 0 && n >= 4 && n <= 16 && ativosPorRodada === n) {
+    const garantidas = gerarRodadasGarantidas(players, numRounds);
+    if (garantidas && garantidas.length) {
+      garantidas.forEach((rd) => {
+        rd.matches.forEach((m) => {
+          const pA = pairKey(m.teamA[0], m.teamA[1]), pB = pairKey(m.teamB[0], m.teamB[1]);
+          history.partner[pA] = (history.partner[pA] || 0) + 1;
+          history.partner[pB] = (history.partner[pB] || 0) + 1;
+          m.teamA.forEach((x) => m.teamB.forEach((y) => { const k = pairKey(x, y); history.opponent[k] = (history.opponent[k] || 0) + 1; }));
+        });
+        rounds.push(rd);
+      });
+    }
+  }
+  for (let r = rounds.length; r < numRounds; r++) {
     const numBye = Math.max(0, n - ativosPorRodada);
     let byeIds = [];
     if (numBye > 0) { for (let i = 0; i < numBye; i++) byeIds.push(players[(cursor + i) % n].id); cursor = (cursor + numBye) % n; }
@@ -163,14 +287,14 @@ function distribuicaoEhJusta(numPlayers, numCourts, numRounds) {
   if (ativosPorRodada === 0) return false;
   return (numRounds * ativosPorRodada) % numPlayers === 0;
 }
-function proximosRoundsValidos(numPlayers, numCourts, quantidade = 6, maxRounds = 30) {
+function proximosRoundsValidos(numPlayers, numCourts, quantidade = 6, maxRounds = 60) {
   const validos = [];
   for (let n = 1; n <= maxRounds && validos.length < quantidade; n++) {
     if (distribuicaoEhJusta(numPlayers, numCourts, n)) validos.push(n);
   }
   return validos;
 }
-function proximoRoundsValidoApartirDe(numPlayers, numCourts, minimo, maxRounds = 30) {
+function proximoRoundsValidoApartirDe(numPlayers, numCourts, minimo, maxRounds = 60) {
   for (let n = Math.max(1, minimo); n <= maxRounds; n++) {
     if (distribuicaoEhJusta(numPlayers, numCourts, n)) return n;
   }
@@ -1323,7 +1447,7 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
-      <div class="field"><label>Rodadas</label><input type="number" min="1" max="30" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
+      <div class="field"><label>Rodadas</label><input type="number" min="1" max="60" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
     </div>
     ${state.tipo !== 'chaves' && numJogadoras >= 4 ? `
       <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:-8px;margin-bottom:10px">
@@ -1912,13 +2036,13 @@ function bindEvents() {
       nomes[idx] = el.value || `Quadra ${String(idx + 1).padStart(2, '0')}`;
       persist({ ...state, nomesQuadras: nomes });
     });
-    if (action === 'set-rounds') el.addEventListener('change', () => persist({ ...state, numRounds: Math.max(1, Math.min(30, Number(el.value) || 1)) }));
+    if (action === 'set-rounds') el.addEventListener('change', () => persist({ ...state, numRounds: Math.max(1, Math.min(60, Number(el.value) || 1)) }));
     if (action === 'usar-cobertura-total') el.addEventListener('click', () => {
       const catKey = currentCategoria();
       const numJogadoras = state.players.filter((p) => categoriaOf(p) === catKey).length;
       const minimo = Number(el.dataset.min);
       const rodadas = proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
-      persist({ ...state, numRounds: Math.min(30, rodadas) });
+      persist({ ...state, numRounds: Math.min(60, rodadas) });
     });
     if (action === 'calcular-rodadas-por-jogos') el.addEventListener('click', () => {
       const desejado = Number(document.getElementById('jogos-por-jogadora').value);
@@ -1929,7 +2053,7 @@ function bindEvents() {
       const minimo = minRoundsForGamesPerPlayer(numJogadoras, state.numCourts, desejado);
       if (minimo === 0) { if (resultadoEl) resultadoEl.textContent = 'Cadastre pelo menos 4 jogadoras na categoria atual primeiro.'; return; }
       const rodadas = proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
-      persist({ ...state, numRounds: Math.min(30, rodadas) });
+      persist({ ...state, numRounds: Math.min(60, rodadas) });
     });
     if (action === 'set-hora-inicio-torneio') el.addEventListener('change', () => persist({ ...state, horaInicioTorneio: el.value }));
     if (action === 'set-duracao-jogo-min') el.addEventListener('change', () => persist({ ...state, duracaoJogoMin: Math.max(1, Number(el.value) || 40) }));
