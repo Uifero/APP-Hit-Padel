@@ -2,18 +2,10 @@ import { firebaseConfig } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getDatabase, ref, onValue, set, get } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js';
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js';
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 const auth = getAuth(app);
-const storage = getStorage(app);
-// Cloud Function que cria a cobrança Pix de verdade no Mercado Pago (backend em /functions) — a
-// confirmação automática de pagamento (webhook) depende dela estar implantada e configurada.
-// Se não estiver (ou der erro), o app cai pro Pix local estático (config/pix) com confirmação manual.
-const functions = getFunctions(app, 'southamerica-east1');
-const criarCobrancaPixFn = httpsCallable(functions, 'criarCobrancaPix');
 const torneiosRef = ref(db, 'torneios');
 const atletasRef = ref(db, 'atletas');
 const pixConfigRef = ref(db, 'config/pix');
@@ -340,8 +332,8 @@ let lobbyFiltroStatus = 'todos';
 let inscritosVisiveis = true;
 let pixConfig = { chave: '', nome: '', cidade: '' }; // config/pix — uma chave só, compartilhada por todos os torneios do clube
 let pubPagamentoAtivo = null; // { list: 'players'|'teams', id } — controla o card de pagamento aberto na tela pública após inscrição
-let pubPagamentoCarregando = false; // true enquanto espera a Cloud Function criar a cobrança no Mercado Pago
-let pubPagamentoErroMsg = null; // mensagem de erro se nem a cobrança automática nem o Pix manual deram certo
+let pubPagamentoCarregando = false; // não usado no fluxo atual (chave Pix é exibida na hora) — mantido só por segurança de estado
+let pubPagamentoErroMsg = null; // mensagem de erro (ex.: organizador sem chave Pix configurada)
 let pubComprovanteEnviando = false; // true enquanto o comprovante está subindo pro Storage
 let pubComprovanteErroMsg = null; // erro do envio do comprovante
 
@@ -501,8 +493,8 @@ function removerAtletaHandler(chave, nome) {
   if (!confirm(`Remover "${nome}" da lista de atletas conhecidos? Isso só afeta a sugestão automática, não mexe em nenhum torneio já cadastrado.`)) return;
   set(ref(db, 'atletas/' + chave), null).catch((e) => console.error('Falha ao remover atleta', e));
 }
-// Chave Pix da conta — uma só, compartilhada por todos os torneios (config/pix). Usada pra montar o
-// payload do QR Code de cobrança; não guarda nenhum dado bancário além do que já é público num Pix.
+// Chave Pix da conta — uma só, compartilhada por todos os torneios (config/pix). É exibida em texto
+// pro atleta pagar manualmente; não guarda nenhum dado bancário além do que já é público num Pix.
 function pixSalvarHandler() {
   const chave = document.getElementById('pix-chave').value.trim();
   const nome = document.getElementById('pix-nome').value.trim();
@@ -536,39 +528,8 @@ function teamNameOf(id) { return state.teams.find((t) => t.id === id)?.name || (
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function catLabel(k) { return k === DEFAULT_CAT ? '' : k; }
 
-// ---------- Pix (Copia e Cola / BR Code estático) — gerado 100% local, sem gateway de pagamento ----------
+// ---------- Pix (chave estática exibida em texto) — sem gateway de pagamento, sem QR Code ----------
 function formatMoeda(v) { return (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
-function crc16Pix(payload) {
-  let crc = 0xFFFF;
-  for (let i = 0; i < payload.length; i++) {
-    crc ^= payload.charCodeAt(i) << 8;
-    for (let j = 0; j < 8; j++) crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
-  }
-  return crc.toString(16).toUpperCase().padStart(4, '0');
-}
-function pixTLV(id, valor) { return `${id}${String(valor.length).padStart(2, '0')}${valor}`; }
-function normalizarTextoPix(s, max) {
-  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9 ]/g, '').trim().toUpperCase().slice(0, max);
-}
-// Monta o payload EMV do Pix estático (com valor fixo) — qualquer app de banco lê via QR Code ou "copia e cola".
-// Confirmação de que o pagamento realmente caiu não é automática (não há gateway): é manual (organizador) ou autodeclarada (atleta).
-function gerarPixPayload({ chave, nome, cidade, valor, txid }) {
-  const merchantInfo = pixTLV('00', 'br.gov.bcb.pix') + pixTLV('01', String(chave || '').trim());
-  const txidLimpo = String(txid || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 25) || '***';
-  const semCrc = [
-    pixTLV('00', '01'),
-    pixTLV('01', '12'),
-    pixTLV('26', merchantInfo),
-    pixTLV('52', '0000'),
-    pixTLV('53', '986'),
-    pixTLV('54', Number(valor).toFixed(2)),
-    pixTLV('58', 'BR'),
-    pixTLV('59', normalizarTextoPix(nome, 25) || 'HIT PADEL'),
-    pixTLV('60', normalizarTextoPix(cidade, 15) || 'BRASIL'),
-    pixTLV('62', pixTLV('05', txidLimpo)),
-  ].join('') + '6304';
-  return semCrc + crc16Pix(semCrc);
-}
 function copiarPixHandler(texto) {
   const fallback = () => {
     const ta = document.createElement('textarea');
@@ -579,15 +540,7 @@ function copiarPixHandler(texto) {
   };
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(texto).catch(fallback);
   else fallback();
-  alert('Código Pix copiado! Cole no app do seu banco em "Pix Copia e Cola".');
-}
-// Desenha nos <canvas data-pix-qr="..."> depois que o innerHTML é montado — a lib QRCode (CDN) expõe QRCode.toCanvas.
-function desenharQrCodesPix() {
-  document.querySelectorAll('canvas[data-pix-qr]').forEach((canvas) => {
-    const texto = canvas.dataset.pixQr;
-    if (!texto || typeof QRCode === 'undefined') return;
-    QRCode.toCanvas(canvas, texto, { width: 220, margin: 1, color: { dark: '#072740', light: '#F6F3EA' } }, (err) => { if (err) console.error('Falha ao gerar QR Pix', err); });
-  });
+  alert('Chave Pix copiada! Cole no app do seu banco pra pagar.');
 }
 
 function currentCategoria() {
@@ -878,14 +831,14 @@ function renderCentralGestao(ativos, encerrados) {
         <div class="card" style="margin-top:20px">
           <div class="card-head-static">💳 Receber pagamentos (Pix)</div>
           <div class="card-body">
-            <div class="hint" style="text-align:left;margin-bottom:4px">Configure sua chave Pix uma vez só — ela é usada pra gerar o QR Code de cobrança em qualquer torneio que tiver valor de inscrição.</div>
+            <div class="hint" style="text-align:left;margin-bottom:4px">Configure sua chave Pix uma vez só — ela aparece em texto pro atleta pagar em qualquer torneio que tiver valor de inscrição.</div>
             <div class="field"><label>Chave Pix</label><input id="pix-chave" placeholder="CPF, e-mail, telefone ou chave aleatória" value="${esc(pixConfig.chave || '')}" /></div>
             <div class="row2">
               <div class="field"><label>Nome do recebedor</label><input id="pix-nome" placeholder="Seu nome ou do clube" value="${esc(pixConfig.nome || '')}" /></div>
               <div class="field"><label>Cidade</label><input id="pix-cidade" placeholder="Ex: Tuparendi" value="${esc(pixConfig.cidade || '')}" /></div>
             </div>
             <button class="btn-primary" data-action="pix-salvar">Salvar chave Pix</button>
-            <div class="hint" style="text-align:left">${pixConfig.chave ? '✓ Chave Pix configurada — os QR Codes de cobrança já usam esses dados.' : '⚠ Sem chave Pix configurada, torneios com valor de inscrição não conseguem gerar QR Code.'}</div>
+            <div class="hint" style="text-align:left">${pixConfig.chave ? '✓ Chave Pix configurada — já aparece pra quem se inscrever em torneios com valor.' : '⚠ Sem chave Pix configurada, torneios com valor de inscrição não conseguem mostrar a chave pra pagamento.'}</div>
           </div>
         </div>
         <div class="card" style="margin-top:20px">
@@ -985,7 +938,7 @@ function renderInscricaoPublica() {
   const catLabelTxt = state.categorias.length ? ` — ${esc(catLabel(catKey) || 'Geral')}` : '';
   const flashMsg = pubSignupFlash ? `<div class="signup-ok">${esc(pubSignupFlash)}</div>` : '';
   const temValor = state.valorInscricao > 0;
-  const avisoValor = temValor ? `<div class="hint" style="text-align:left;margin-bottom:8px">💰 Inscrição: <strong>${formatMoeda(state.valorInscricao)}</strong>${state.tipo === 'chaves' ? ' por dupla (mesmo sem parceiro(a) ainda)' : ' por atleta'}. Ao inscrever, aparece o QR Code Pix pra pagar — a inscrição fica pendente até o pagamento ser confirmado.</div>` : '';
+  const avisoValor = temValor ? `<div class="hint" style="text-align:left;margin-bottom:8px">💰 Inscrição: <strong>${formatMoeda(state.valorInscricao)}</strong>${state.tipo === 'chaves' ? ' por dupla (mesmo sem parceiro(a) ainda)' : ' por atleta'}. Ao inscrever, aparece a chave Pix pra pagar e anexar o comprovante — a inscrição fica pendente até o organizador confirmar o pagamento.</div>` : '';
   if (state.tipo === 'chaves') {
     return `
     <section class="card signup-card">
@@ -1028,9 +981,7 @@ function renderPagamentoCard() {
   if (!registro || !(Number(registro.valor) > 0) || registro.statusPagamento === 'pago') return '';
   const valor = Number(registro.valor);
   const aguardando = registro.statusPagamento === 'aguardando_confirmacao';
-  // mpPaymentId só existe quando a Cloud Function conseguiu criar a cobrança de verdade no Mercado
-  // Pago — se essa inscrição ficou no fallback local (aplicarPixFallbackLocal), esse campo nunca é setado.
-  const automatico = !!registro.mpPaymentId;
+  const temChave = !!(pixConfig && pixConfig.chave);
   return `
   <section class="card signup-card" style="border-color:var(--yellow)">
     <div class="card-body">
@@ -1039,21 +990,18 @@ function renderPagamentoCard() {
         <div class="hint" style="text-align:left;margin-bottom:4px">Valor: <strong>${formatMoeda(valor)}</strong></div>
         <div class="hint" style="text-align:left;margin-bottom:8px">${
           aguardando ? '🕓 Avisamos o organizador que você já pagou — assim que ele confirmar, sua inscrição vira confirmada.'
-          : automatico ? '⚡ Assim que o Pix cair, sua inscrição é confirmada automaticamente — não precisa fazer mais nada.'
-          : 'Pague pelo Pix abaixo. Sua inscrição fica pendente até o organizador confirmar o pagamento.'
+          : 'Pague no Pix com a chave abaixo e anexe o comprovante. Sua inscrição fica pendente até o organizador confirmar o pagamento.'
         }</div>
-        ${pubPagamentoCarregando ? `<div class="hint" style="text-align:left">Gerando cobrança Pix...</div>` : ''}
-        ${!pubPagamentoCarregando && pubPagamentoErroMsg ? `
-          <div class="hint hint-alerta" style="text-align:left;margin-bottom:8px">${esc(pubPagamentoErroMsg)}</div>
-          <button class="mode-btn" data-action="pub-ver-pix" data-list="${list}" data-id="${id}" data-valor="${valor}" data-nome="${esc(registro.name)}">Tentar de novo</button>
+        ${!aguardando && temChave ? `
+        <label>Chave Pix</label>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
+          <input readonly class="pix-copia-cola" style="min-height:auto;padding:9px 12px;font-family:inherit;font-size:14px" id="pix-chave-exibida-${esc(id)}" value="${esc(pixConfig.chave)}" />
+          <button class="mode-btn" data-action="copiar-pix" data-texto="${esc(pixConfig.chave)}">📋 Copiar</button>
+        </div>
+        ${pixConfig.nome ? `<div class="hint" style="text-align:left;margin-bottom:8px">Recebedor: ${esc(pixConfig.nome)}${pixConfig.cidade ? ` — ${esc(pixConfig.cidade)}` : ''}</div>` : ''}
         ` : ''}
-        ${!pubPagamentoCarregando && registro.pixQrCode ? `
-        <div class="pix-qr-wrap"><canvas data-pix-qr="${esc(registro.pixQrCode)}" width="220" height="220"></canvas></div>
-        <label>Pix Copia e Cola</label>
-        <textarea readonly class="pix-copia-cola" id="pix-copia-cola-${esc(id)}">${esc(registro.pixQrCode)}</textarea>
-        <button class="mode-btn" data-action="copiar-pix" data-texto="${esc(registro.pixQrCode)}" style="margin-top:6px">📋 Copiar código Pix</button>
-        ` : ''}
-        ${!automatico && !pubPagamentoCarregando ? `
+        ${!aguardando && !temChave ? `<div class="hint hint-alerta" style="text-align:left;margin-bottom:8px">O organizador ainda não configurou a chave Pix. Fale com ele pra combinar o pagamento.</div>` : ''}
+        ${!aguardando ? `
         <label style="margin-top:12px">📎 Anexar comprovante do Pix (foto ou PDF)</label>
         <div class="hint" style="text-align:left;margin-bottom:6px">Pague, tire um print ou foto do comprovante e anexe aqui — o organizador confere e confirma sua inscrição manualmente.</div>
         <input type="file" accept="image/*,application/pdf" id="comprovante-input-${esc(id)}" style="margin-bottom:8px" />
@@ -1061,7 +1009,7 @@ function renderPagamentoCard() {
         ${pubComprovanteErroMsg ? `<div class="hint hint-alerta" style="text-align:left;margin-top:4px">${esc(pubComprovanteErroMsg)}</div>` : ''}
         ${registro.comprovantePath ? `<div class="hint" style="text-align:left;margin-top:6px">✓ Comprovante enviado — aguardando o organizador conferir.</div>` : ''}
         ` : ''}
-        ${!aguardando ? `<button class="mode-btn" style="margin-top:10px" data-action="pub-declarar-pago" data-list="${list}" data-id="${id}">${automatico ? 'Já paguei e não confirmou? Avisar organizador' : 'Já paguei sem anexar comprovante'}</button>` : ''}
+        ${!aguardando ? `<button class="mode-btn" style="margin-top:10px" data-action="pub-declarar-pago" data-list="${list}" data-id="${id}">Já paguei sem anexar comprovante</button>` : ''}
         <button class="mode-btn" style="margin-top:6px" data-action="pub-fechar-pagamento">Fechar</button>
       </div>
     </div>
@@ -1350,7 +1298,7 @@ function renderConfigModulo() {
       <input type="number" min="0" step="0.01" id="config-valor-inscricao" value="${state.valorInscricao || ''}" placeholder="0,00 = grátis" data-action="set-valor-inscricao" />
       <div class="hint" style="text-align:left;margin-top:4px">
         ${state.tipo === 'chaves' ? 'Cobrado sempre o valor total da dupla, mesmo quando ela se inscreve "sem parceiro(a)".' : 'Cobrado por atleta (as duplas do Americano são sorteadas e mudam a cada rodada).'}
-        ${state.valorInscricao > 0 && !pixConfig.chave ? ' <span class="hint-alerta">⚠ Configure sua chave Pix na Central de Gestão pra gerar o QR Code de cobrança.</span>' : ''}
+        ${state.valorInscricao > 0 && !pixConfig.chave ? ' <span class="hint-alerta">⚠ Configure sua chave Pix na Central de Gestão pra ela aparecer na hora do pagamento.</span>' : ''}
       </div>
     </div>
     ${renderCategoriasSetup()}
@@ -1834,15 +1782,8 @@ function bindEvents() {
     if (action === 'ver-comprovante') el.addEventListener('click', () => verComprovanteHandler(el.dataset.caminho));
     if (action === 'pub-ver-pix') el.addEventListener('click', () => {
       const list = el.dataset.list, id = el.dataset.id;
-      const registro = (state[list] || []).find((x) => x.id === id);
-      if (registro && registro.pixQrCode) {
-        // já tem cobrança/QR gerado pra essa inscrição — só reabre o card, sem chamar o backend de novo
-        pubPagamentoAtivo = { list, id };
-        pubPagamentoErroMsg = null;
-        render();
-      } else {
-        iniciarPagamento(list, id, Number(el.dataset.valor) || 0, el.dataset.nome || (registro && registro.name) || '');
-      }
+      pubPagamentoAtivo = { list, id };
+      render();
     });
     if (action === 'pub-fechar-pagamento') el.addEventListener('click', () => { pubPagamentoAtivo = null; pubPagamentoErroMsg = null; pubComprovanteErroMsg = null; render(); });
     if (action === 'copiar-pix') el.addEventListener('click', () => copiarPixHandler(el.dataset.texto));
@@ -2019,7 +1960,6 @@ function bindEvents() {
       if (conhecido && conhecido.telefone) telEl.value = conhecido.telefone;
     });
   });
-  desenharQrCodesPix();
 }
 
 function bindPinModal() {
@@ -2115,36 +2055,11 @@ function addTeamHandler() {
   lembrarAtleta(j1, tel1);
   if (j2) lembrarAtleta(j2, tel2);
 }
-// Fallback quando a cobrança automática (Mercado Pago) não está configurada ou falhou: gera o Pix
-// estático local com a chave da conta (config/pix) e grava direto — sem depender de nenhum backend.
-// Fica marcado como "modo manual" pra tela de pagamento saber que não vai confirmar sozinho.
-function aplicarPixFallbackLocal(list, id, valor) {
-  const payload = gerarPixPayload({ chave: pixConfig.chave, nome: pixConfig.nome, cidade: pixConfig.cidade, valor, txid: id });
-  persist({ ...state, [list]: state[list].map((x) => x.id === id ? { ...x, pixQrCode: payload, pixModoManual: true } : x) });
-}
-// Abre o card de pagamento e tenta criar uma cobrança Pix automática de verdade no Mercado Pago
-// (via Cloud Function). Se a função não estiver implantada/configurada, ou der erro, cai pro Pix
-// manual local (se a chave Pix da conta estiver configurada) — nunca trava a inscrição.
-async function iniciarPagamento(list, id, valor, nomeExibicao) {
+// Abre o card de pagamento logo após a inscrição — mostra a chave Pix da conta (config/pix) em
+// texto, pro atleta pagar manualmente, e o campo pra anexar o comprovante.
+function abrirPagamento(list, id) {
   pubPagamentoAtivo = { list, id };
-  pubPagamentoCarregando = true;
   pubPagamentoErroMsg = null;
-  render();
-  try {
-    await criarCobrancaPixFn({ tournamentId: currentTournamentId, list, id, valor, descricao: `Inscrição — ${state.name} — ${nomeExibicao}` });
-    // sucesso: a própria Cloud Function já grava pixQrCode/mpPaymentId no registro — o listener em
-    // tempo real (onValue) vai trazer isso pro state sozinho, sem precisar de mais nada aqui. (Não
-    // fazemos nenhuma escrita extra pelo cliente nesse ponto pra não arriscar sobrescrever, com um
-    // "state" local ainda desatualizado, o que a função acabou de gravar no servidor.)
-  } catch (e) {
-    console.error('Cobrança automática indisponível, usando Pix manual como alternativa', e);
-    if (pixConfig.chave) {
-      aplicarPixFallbackLocal(list, id, valor);
-    } else {
-      pubPagamentoErroMsg = 'Não foi possível gerar o QR Code automaticamente, e o organizador ainda não configurou uma chave Pix reserva. Fale com o organizador pra combinar o pagamento.';
-    }
-  }
-  pubPagamentoCarregando = false;
   render();
 }
 // Redimensiona/comprime uma imagem no navegador antes de subir (economiza dados do celular de quem
@@ -2169,21 +2084,33 @@ function comprimirImagemSeForImagem(file) {
     img.src = imgUrl;
   });
 }
-// Sobe o comprovante (print/PDF do Pix) pro Storage e marca a inscrição como "aguardando
-// confirmação" — o admin confere o comprovante e confirma manualmente (sem taxa nenhuma de gateway).
+// Converte o arquivo (já comprimido, se for imagem) numa data URL base64 — assim dá pra guardar o
+// comprovante direto no Realtime Database, sem precisar do Cloud Storage (que exige plano Blaze/cartão).
+function arquivoParaDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+// Guarda o comprovante (print/PDF do Pix) como base64 num nó separado do Realtime Database
+// (comprovantes/{torneio}/{lista}__{id}) — nunca dentro do próprio registro do atleta/dupla, pra não
+// pesar o carregamento normal da tela (que já baixa o torneio inteiro a cada mudança). Marca a
+// inscrição como "aguardando confirmação" — o admin confere e confirma manualmente, sem taxa de gateway.
 async function enviarComprovanteHandler(list, id, file) {
   if (!file) return;
   const tipoOk = file.type.startsWith('image/') || file.type === 'application/pdf';
   if (!tipoOk) { pubComprovanteErroMsg = 'Envie uma foto/print ou um PDF do comprovante.'; render(); return; }
-  if (file.size > 8 * 1024 * 1024) { pubComprovanteErroMsg = 'Arquivo muito grande (máx. 8 MB).'; render(); return; }
+  if (file.size > 4 * 1024 * 1024) { pubComprovanteErroMsg = 'Arquivo muito grande (máx. 4 MB).'; render(); return; }
   pubComprovanteEnviando = true;
   pubComprovanteErroMsg = null;
   render();
   try {
     const arquivo = await comprimirImagemSeForImagem(file);
-    const extensao = file.type === 'application/pdf' ? 'pdf' : 'jpg';
-    const caminho = `comprovantes/${currentTournamentId}/${list}__${id}__${Date.now()}.${extensao}`;
-    await uploadBytes(storageRef(storage, caminho), arquivo, { contentType: file.type === 'application/pdf' ? 'application/pdf' : 'image/jpeg' });
+    const dataUrl = await arquivoParaDataUrl(arquivo);
+    const caminho = `comprovantes/${currentTournamentId}/${list}__${id}`;
+    await set(ref(db, caminho), { dataUrl, contentType: arquivo.type || file.type, enviadoEm: Date.now() });
     const registro = (state[list] || []).find((x) => x.id === id);
     const patch = { comprovantePath: caminho, comprovanteEnviadoEm: Date.now() };
     if (registro && registro.statusPagamento !== 'pago') patch.statusPagamento = 'aguardando_confirmacao';
@@ -2195,12 +2122,18 @@ async function enviarComprovanteHandler(list, id, file) {
   pubComprovanteEnviando = false;
   render();
 }
-// Admin: pede a URL de download só na hora do clique (a regra do Storage só libera pra quem tá
-// logado) e abre numa aba nova — evita guardar um link "público pra sempre" em qualquer lugar.
+// Admin: busca o comprovante no Realtime Database só na hora do clique, monta um Blob local e abre
+// numa aba nova — nada fica em cache/URL pública, só existe enquanto essa aba estiver aberta.
 async function verComprovanteHandler(caminho) {
   try {
-    const url = await getDownloadURL(storageRef(storage, caminho));
+    const snap = await get(ref(db, caminho));
+    const dados = snap.val();
+    if (!dados || !dados.dataUrl) { alert('Comprovante não encontrado (pode ter sido removido).'); return; }
+    const resposta = await fetch(dados.dataUrl);
+    const blob = await resposta.blob();
+    const url = URL.createObjectURL(blob);
     window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (e) {
     console.error('Falha ao abrir comprovante', e);
     alert('Não foi possível abrir o comprovante agora. Tente de novo.');
@@ -2222,7 +2155,7 @@ function pubAddPlayerHandler() {
   lembrarAtleta(name, telefone);
   nameInput.value = ''; phoneInput.value = '';
   if (valor > 0) {
-    iniciarPagamento('players', novoId, valor, name);
+    abrirPagamento('players', novoId);
   } else {
     pubSignupFlash = `"${name}" inscrita(o) ✓ (aguardando confirmação do organizador)`;
     render();
@@ -2254,7 +2187,7 @@ function pubAddTeamHandler() {
   document.getElementById('pub-team-tel2').value = '';
   document.getElementById('pub-team-sem-parceiro').checked = false;
   if (valor > 0) {
-    iniciarPagamento('teams', novoId, valor, name);
+    abrirPagamento('teams', novoId);
   } else {
     pubSignupFlash = `"${name}" inscrita ✓ (aguardando confirmação do organizador)`;
     render();
