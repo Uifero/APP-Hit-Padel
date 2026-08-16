@@ -52,6 +52,9 @@ function defaultState() {
     valorInscricao: 0,  // R$ — 0/vazio = torneio gratuito. No tipo 'chaves' é sempre por dupla; nos demais, por atleta.
     limiteInscritos: 0, // legado (limite único pra todas as categorias) — mantido só como fallback pra torneios configurados antes de existir o limite por categoria.
     limitesPorCategoria: {}, // { [categoria]: limite } — 0/vazio = sem limite naquela categoria. Ao bater o limite, novas inscrições entram na fila de espera.
+    // [{ id, nome, youtubeId, ativa }] — transmissão ao vivo via YouTube Live, exibida na aba "Ao Vivo".
+    // Já nasce com uma câmera por quadra (mesmo padrão de nomesQuadras) pra não precisar cadastrar na mão.
+    camerasAoVivo: [{ id: uid(), nome: 'Quadra 01', youtubeId: '', ativa: false }, { id: uid(), nome: 'Quadra 02', youtubeId: '', ativa: false }],
   };
 }
 
@@ -427,6 +430,8 @@ let savedFlash = null;
 let editingMatches = new Set();
 let selectedCategoria = null;
 let jogosFiltroData = 'todas';
+let jogoSelecionadoParaTroca = null; // id do jogo marcado pra trocar quadra/horário com outro (2 cliques)
+let rodadaSelecionadaParaTroca = null; // { catKey, indice } — rodada do Americano marcada pra trocar de lugar com outra (2 cliques)
 let pubSignupFlash = null;
 let currentTournamentId = null;
 let avisoDemoraMostrado = false;
@@ -1267,7 +1272,68 @@ const STATUS_AO_VIVO = {
   pendente: { emoji: '🔴', texto: 'Resultado pendente' },
   livre: { emoji: '⚪', texto: 'Livre' },
 };
+// Aceita tanto um link colado (youtube.com/watch?v=..., youtu.be/..., .../live/..., .../shorts/...)
+// quanto o ID puro do vídeo, e devolve só o ID (11 caracteres) — ou '' se não reconhecer o formato.
+function extrairYoutubeId(input) {
+  const raw = (input || '').trim();
+  if (!raw) return '';
+  if (/^[\w-]{11}$/.test(raw)) return raw;
+  const padroes = [/youtu\.be\/([\w-]{11})/, /[?&]v=([\w-]{11})/, /youtube\.com\/embed\/([\w-]{11})/, /youtube\.com\/live\/([\w-]{11})/, /youtube\.com\/shorts\/([\w-]{11})/];
+  for (const re of padroes) {
+    const m = raw.match(re);
+    if (m) return m[1];
+  }
+  return '';
+}
+// Transmissão ao vivo por câmera: cada "câmera" é, na prática, uma live do YouTube que o admin
+// inicia pelo celular (app do YouTube, apontando pra quadra) e cola o link aqui. O app não recebe
+// nem retransmite vídeo nenhum — só exibe o player embutido do YouTube quando o admin marca como
+// ativa, e esconde quando desativa. Dá pra ter várias câmeras (uma por quadra) ligadas ao mesmo tempo.
+function renderCamerasAoVivo() {
+  const cameras = state.camerasAoVivo || [];
+  const ativas = cameras.filter((c) => c.ativa && c.youtubeId);
+  const gestao = isAdmin ? `
+    <div class="field" style="margin-bottom:14px">
+      <label>📹 Transmissão ao vivo (câmeras)</label>
+      <div class="hint" style="text-align:left;margin-bottom:8px">Transmita pelo app do YouTube no celular (Criar → Transmitir ao vivo) apontando pra quadra, cole o link da live aqui e ative quando quiser que apareça pra todo mundo. Desative quando terminar — dá pra reativar depois com o mesmo link.</div>
+      ${cameras.map((c) => `
+        <div class="camera-ao-vivo-item">
+          <div class="row" style="align-items:center">
+            <span style="flex:1;font-size:14px;font-weight:600">${esc(c.nome)}</span>
+            <button class="mode-btn ${c.ativa ? 'active' : ''}" data-action="toggle-camera-ativa" data-id="${c.id}">${c.ativa ? '🔴 Ao vivo' : '⏸ Desativada'}</button>
+            <button class="mode-btn btn-danger" data-action="remove-camera-ao-vivo" data-id="${c.id}" data-nome="${esc(c.nome)}">Remover</button>
+          </div>
+          <input style="margin-top:4px" placeholder="Cole aqui o link da live no YouTube" value="${esc(c.youtubeId ? `https://youtu.be/${c.youtubeId}` : '')}" data-action="set-camera-link" data-id="${c.id}" />
+        </div>
+      `).join('')}
+      <div class="row" style="margin-top:6px">
+        <input id="new-camera-nome" placeholder="Nome da câmera (ex: Quadra 1)" />
+        <button data-action="add-camera-ao-vivo">+</button>
+      </div>
+    </div>` : '';
+  const vitrine = ativas.length ? `
+    <div class="cameras-ao-vivo-grid">
+      ${ativas.map((c) => `
+        <div class="camera-ao-vivo-player">
+          <div class="hint" style="text-align:left;margin-bottom:4px">🔴 ${esc(c.nome)} — ao vivo</div>
+          <div class="camera-ao-vivo-frame" id="camera-frame-${c.id}">
+            <iframe id="camera-iframe-${c.id}" src="https://www.youtube.com/embed/${esc(c.youtubeId)}" title="${esc(c.nome)}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen" allowfullscreen webkitallowfullscreen mozallowfullscreen></iframe>
+            <div class="camera-ao-vivo-watermark">
+              <img src="./logo.png" alt="" />
+              <span>${esc(state.name)}</span>
+            </div>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <button class="mode-btn" data-action="tela-cheia-camera" data-id="${c.id}">⛶ Tela cheia</button>
+            <a class="mode-btn" style="text-decoration:none" href="https://youtu.be/${esc(c.youtubeId)}" target="_blank" rel="noopener">▶ Abrir no YouTube</a>
+          </div>
+        </div>
+      `).join('')}
+    </div>` : '';
+  return gestao + vitrine;
+}
 function renderAoVivoModulo(catKey) {
+  const cameras = renderCamerasAoVivo();
   if (state.tipo === 'chaves') {
     const items = collectJogos(catKey);
     const hoje = hojeISO();
@@ -1277,6 +1343,7 @@ function renderAoVivoModulo(catKey) {
     const atrasadas = doDia.filter((it) => it.hora && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) < agoraMin);
     const proximas = doDia.filter((it) => !atrasadas.includes(it));
     return `
+      ${cameras}
       <div class="hint" style="text-align:left;margin-bottom:10px">No modo Torneio as partidas não têm quadra fixa, então a lista abaixo é organizada por horário de hoje em vez de por quadra.</div>
       <div class="round-title"><span>🔴 Resultado pendente (${atrasadas.length})</span></div>
       ${atrasadas.length ? atrasadas.map((it) => renderAoVivoLinha(it)).join('') : `<div class="hint">Nenhuma.</div>`}
@@ -1286,6 +1353,7 @@ function renderAoVivoModulo(catKey) {
   }
   const board = statusQuadrasAoVivo(catKey);
   return `
+    ${cameras}
     <div class="aovivo-grid">
       ${board.map((e) => `
         <div class="aovivo-card aovivo-${e.status}">
@@ -1519,6 +1587,19 @@ function renderCategoriasSetup() {
     </div>`;
 }
 
+// Texto "X inscritos agora / com esse limite seriam Y rodadas", usado tanto na primeira renderização
+// quanto atualizado ao vivo (sem re-render completo) enquanto o admin digita o limite. numRoundsFullCoverage
+// é a mesma conta usada em "Cobertura total" — quantas rodadas são necessárias pra todo mundo se
+// enfrentar pelo menos 1 vez, dado o número de quadras atual.
+function textoLimitePreview(catKey, limiteOverride) {
+  const lista = state.tipo === 'chaves' ? state.teams : state.players;
+  const inscritos = lista.filter((x) => categoriaOf(x) === catKey && !x.oculto).length;
+  const numCourts = Math.max(1, Number(state.numCourts) || 1);
+  const limite = limiteOverride != null ? limiteOverride : limiteDaCategoria(catKey);
+  const rodadasAtual = inscritos >= 4 ? minRoundsForFullCoverage(inscritos, numCourts) : null;
+  const rodadasLimite = limite > 0 && limite >= 4 ? minRoundsForFullCoverage(limite, numCourts) : null;
+  return `${inscritos} inscrito(s) agora${rodadasAtual ? ` — ~${rodadasAtual} rodada(s) pra todos jogarem contra todos (${numCourts} quadra(s))` : ''}.${rodadasLimite ? ` Com o limite de ${limite}, seriam ~${rodadasLimite} rodada(s).` : ''}`;
+}
 // Limite de vagas configurável por categoria (uma categoria pode ter mais vagas que outra). Sem
 // categorias cadastradas, mostra um único campo pra "Geral". Ao bater o limite de uma categoria,
 // as próximas inscrições daquela categoria entram na fila de espera (ver categoriaLotada()).
@@ -1530,9 +1611,12 @@ function renderLimitesPorCategoria() {
       <label>Limite de vagas por categoria (${unidade})</label>
       <div class="hint" style="text-align:left;margin-bottom:8px">Deixe em branco/0 pra não ter limite naquela categoria. Ao bater o limite, novas inscrições entram na fila de espera até você aprovar.</div>
       ${keys.map((k) => `
-        <div class="row" style="align-items:center;margin-top:0;margin-bottom:6px">
-          <span style="flex:1;font-size:14px">${esc(catLabel(k) || 'Geral')}</span>
-          <input type="number" min="0" step="1" style="flex:0 0 100px;min-width:70px" data-action="set-limite-categoria" data-cat="${esc(k)}" value="${limiteDaCategoria(k) || ''}" placeholder="sem limite" />
+        <div class="limite-cat-block" data-cat="${esc(k)}" style="margin-bottom:10px">
+          <div class="row" style="align-items:center;margin-top:0;margin-bottom:2px">
+            <span style="flex:1;font-size:14px">${esc(catLabel(k) || 'Geral')}</span>
+            <input type="number" min="0" step="1" style="flex:0 0 100px;min-width:70px" data-action="set-limite-categoria" data-cat="${esc(k)}" value="${limiteDaCategoria(k) || ''}" placeholder="sem limite" />
+          </div>
+          <div class="hint limite-cat-preview" style="text-align:left">${textoLimitePreview(k)}</div>
         </div>
       `).join('')}
     </div>`;
@@ -1592,7 +1676,7 @@ function renderPlayersSetup(minRounds) {
       </div>
       ` : ''}
       <div class="row">
-        <input id="new-player" placeholder="Nome da jogadora" list="atletas-datalist" />
+        <input id="new-player" placeholder="Nome do jogador" list="atletas-datalist" />
         ${showCatSelect ? `<select id="new-player-cat">${state.categorias.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>` : ''}
         <button data-action="add-player">+</button>
       </div>
@@ -1654,13 +1738,15 @@ function renderRounds(catRounds, catKey) {
       const todasJogadas = rd.matches.every((m) => partidaJogada(m));
       const recolhida = chave in rodadasEstadoManual ? rodadasEstadoManual[chave] : todasJogadas;
       const jogadasCount = rd.matches.filter((m) => partidaJogada(m)).length;
+      const trocaSelecionada = rodadaSelecionadaParaTroca && rodadaSelecionadaParaTroca.catKey === catKey && rodadaSelecionadaParaTroca.indice === ri;
       return `
-      <div class="round-block ${rd.isFinal ? 'is-final' : ''}">
+      <div class="round-block ${rd.isFinal ? 'is-final' : ''} ${trocaSelecionada ? 'round-selecionada-troca' : ''}">
         <div class="round-title round-title-toggle" data-action="toggle-rodada" data-chave="${chave}" data-recolhida="${recolhida ? '1' : '0'}">
           <span>${rd.isFinal ? '🏆 GRANDE FINAL' : `Rodada ${rd.round}`}${recolhida ? ` <em class="round-resumo">(${jogadasCount}/${rd.matches.length} jogadas)</em>` : ''}</span>
           ${rd.byes && rd.byes.length && !recolhida ? `<span class="bye">folga: ${rd.byes.map(nameOf).map(esc).join(', ')}</span>` : ''}
           <span class="round-toggle-icon">${recolhida ? '▼' : '▲'}</span>
         </div>
+        ${isAdmin && !rd.isFinal ? `<div style="margin:4px 0 8px"><button class="mode-btn ${trocaSelecionada ? 'active' : ''}" data-action="marcar-trocar-rodada" data-cat="${esc(catKey)}" data-indice="${ri}">${trocaSelecionada ? '✕ Cancelar troca de rodada' : '🔁 Trocar essa rodada com outra'}</button></div>` : ''}
         ${recolhida ? '' : `<div class="matches">${rd.matches.map((m) => renderMatch(m, ri)).join('')}</div>`}
       </div>`;
     }).join('')}
@@ -1682,8 +1768,9 @@ function renderMatch(m, ri) {
   const editing = editingMatches.has(m.id);
   const showInputs = isAdmin && (!done || editing);
   const ag = state.agendamentos[m.id] || {};
+  const selecionado = jogoSelecionadoParaTroca === m.id;
   return `
-  <div class="match">
+  <div class="match ${selecionado ? 'match-selecionado-troca' : ''}">
     <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${ag.data ? `<span class="jogo-hora">🕐 ${formatData(ag.data)} ${esc(ag.hora || '')}</span>` : ''}${done && !editing ? '<span class="check">✓</span>' : ''}</div>
     <div class="team-row">
       <span class="team-name">${m.teamA.map(nameOf).map(esc).join(' + ')}</span>
@@ -1701,6 +1788,7 @@ function renderMatch(m, ri) {
         <input type="date" class="agendamento-data" data-match="${m.id}" value="${esc(ag.data || '')}" />
         <input type="time" class="agendamento-hora" data-match="${m.id}" value="${esc(ag.hora || '')}" />
       </div>
+      <button class="mode-btn ${selecionado ? 'active' : ''}" style="margin-top:6px" data-action="marcar-trocar-jogo" data-match="${m.id}">${selecionado ? '✕ Cancelar troca' : '🔁 Trocar quadra/horário com outro jogo'}</button>
     ` : ''}
   </div>`;
 }
@@ -1870,8 +1958,9 @@ function renderJogosView(catKey) {
   `;
 }
 function renderJogoItem(it) {
+  const selecionado = jogoSelecionadoParaTroca === it.id;
   return `
-  <div class="match">
+  <div class="match ${selecionado ? 'match-selecionado-troca' : ''}">
     <div class="match-head"><span class="court-tag">${esc(it.fase)}</span>${it.hora ? `<span class="jogo-hora">🕐 ${esc(it.hora)}</span>` : ''}</div>
     <div class="team-row"><span class="team-name">${esc(it.a)}</span><span class="score">${it.scoreA ?? '–'}</span></div>
     <div class="vs">×</div>
@@ -1881,6 +1970,7 @@ function renderJogoItem(it) {
         <input type="date" class="agendamento-data" data-match="${it.id}" value="${esc(it.data)}" />
         <input type="time" class="agendamento-hora" data-match="${it.id}" value="${esc(it.hora)}" />
       </div>
+      <button class="mode-btn ${selecionado ? 'active' : ''}" style="margin-top:6px" data-action="marcar-trocar-jogo" data-match="${it.id}">${selecionado ? '✕ Cancelar troca' : '🔁 Trocar com outro jogo'}</button>
     ` : ''}
   </div>`;
 }
@@ -1951,11 +2041,21 @@ function bindEvents() {
     });
     if (action === 'pix-salvar') el.addEventListener('click', pixSalvarHandler);
     if (action === 'set-valor-inscricao') el.addEventListener('change', () => persist({ ...state, valorInscricao: Math.max(0, Number(el.value) || 0) }));
-    if (action === 'set-limite-categoria') el.addEventListener('change', () => {
-      const cat = el.dataset.cat;
-      const valor = Math.max(0, Math.floor(Number(el.value) || 0));
-      persist({ ...state, limitesPorCategoria: { ...(state.limitesPorCategoria || {}), [cat]: valor } });
-    });
+    if (action === 'set-limite-categoria') {
+      el.addEventListener('change', () => {
+        const cat = el.dataset.cat;
+        const valor = Math.max(0, Math.floor(Number(el.value) || 0));
+        persist({ ...state, limitesPorCategoria: { ...(state.limitesPorCategoria || {}), [cat]: valor } });
+      });
+      // Atualiza o texto "quantas rodadas seriam necessárias" na hora, enquanto digita — sem salvar
+      // no banco nem re-renderizar a tela inteira a cada tecla (isso só acontece no 'change' acima).
+      el.addEventListener('input', () => {
+        const cat = el.dataset.cat;
+        const bloco = el.closest('.limite-cat-block');
+        const previewEl = bloco ? bloco.querySelector('.limite-cat-preview') : null;
+        if (previewEl) previewEl.textContent = textoLimitePreview(cat, Math.max(0, Math.floor(Number(el.value) || 0)));
+      });
+    }
     if (action === 'marcar-pago') el.addEventListener('click', () => marcarPagoHandler(el.dataset.list, el.dataset.id));
     if (action === 'desmarcar-pago') el.addEventListener('click', () => desmarcarPagoHandler(el.dataset.list, el.dataset.id));
     if (action === 'pub-declarar-pago') el.addEventListener('click', () => pubDeclararPagoHandler(el.dataset.list, el.dataset.id));
@@ -1990,6 +2090,8 @@ function bindEvents() {
       render();
     });
     if (action === 'toggle-atletas-conhecidos') el.addEventListener('click', () => { mostrarAtletasConhecidos = !mostrarAtletasConhecidos; render(); });
+    if (action === 'marcar-trocar-jogo') el.addEventListener('click', () => marcarTrocarJogoHandler(el.dataset.match));
+    if (action === 'marcar-trocar-rodada') el.addEventListener('click', () => marcarTrocarRodadaHandler(el.dataset.cat, Number(el.dataset.indice)));
     if (action === 'toggle-inscritos-publico') el.addEventListener('click', () => { inscritosVisiveis = !inscritosVisiveis; render(); });
     if (action === 'atleta-salvar') el.addEventListener('click', () => editarAtletaHandler(el.dataset.chave));
     if (action === 'atleta-remover') el.addEventListener('click', () => removerAtletaHandler(el.dataset.chave, el.dataset.nome));
@@ -2002,6 +2104,11 @@ function bindEvents() {
     if (action === 'add-cat') el.addEventListener('click', addCategoriaHandler);
     if (action === 'add-cat-sugg') el.addEventListener('click', () => addCategoria(el.dataset.cat));
     if (action === 'remove-cat') el.addEventListener('click', () => removeCategoriaHandler(el.dataset.cat));
+    if (action === 'add-camera-ao-vivo') el.addEventListener('click', addCameraAoVivoHandler);
+    if (action === 'set-camera-link') el.addEventListener('change', () => setCameraLinkHandler(el.dataset.id, el.value));
+    if (action === 'toggle-camera-ativa') el.addEventListener('click', () => toggleCameraAtivaHandler(el.dataset.id));
+    if (action === 'remove-camera-ao-vivo') el.addEventListener('click', () => removeCameraAoVivoHandler(el.dataset.id, el.dataset.nome));
+    if (action === 'tela-cheia-camera') el.addEventListener('click', () => telaCheiaCameraHandler(el.dataset.id));
     if (action === 'remove-player') el.addEventListener('click', () => {
       const nome = el.dataset.nome || 'esta jogadora';
       if (!confirm(`Remover "${nome}" do torneio? Essa ação não pode ser desfeita.`)) return;
@@ -2212,6 +2319,42 @@ function addCategoriaHandler() {
 function removeCategoriaHandler(cat) {
   if (!confirm(`Remover a categoria "${cat}"? Jogadoras/duplas cadastradas nela continuam, mas sem categoria.`)) return;
   persist({ ...state, categorias: state.categorias.filter((c) => c !== cat) });
+}
+function addCameraAoVivoHandler() {
+  const input = document.getElementById('new-camera-nome');
+  const nome = (input.value || '').trim();
+  if (!nome) return;
+  const nova = { id: uid(), nome, youtubeId: '', ativa: false };
+  persist({ ...state, camerasAoVivo: [...(state.camerasAoVivo || []), nova] });
+}
+function setCameraLinkHandler(id, valor) {
+  const youtubeId = extrairYoutubeId(valor);
+  if (valor && !youtubeId) { alert('Não reconheci esse link do YouTube. Cole o link completo da transmissão ao vivo (ex: https://youtu.be/xxxxxxxxxxx).'); return; }
+  persist({ ...state, camerasAoVivo: (state.camerasAoVivo || []).map((c) => c.id === id ? { ...c, youtubeId, ativa: youtubeId ? c.ativa : false } : c) });
+}
+function toggleCameraAtivaHandler(id) {
+  const cam = (state.camerasAoVivo || []).find((c) => c.id === id);
+  if (!cam) return;
+  if (!cam.ativa && !cam.youtubeId) { alert('Cole o link da live antes de ativar essa câmera.'); return; }
+  persist({ ...state, camerasAoVivo: state.camerasAoVivo.map((c) => c.id === id ? { ...c, ativa: !c.ativa } : c) });
+}
+function removeCameraAoVivoHandler(id, nome) {
+  if (!confirm(`Remover a câmera "${nome || 'esta câmera'}"?`)) return;
+  persist({ ...state, camerasAoVivo: (state.camerasAoVivo || []).filter((c) => c.id !== id) });
+}
+// A qualidade do vídeo é a mesma do YouTube (é o player original deles rodando dentro do app, sem
+// nenhuma compressão nossa) — quem controla isso é o próprio YouTube, automaticamente, conforme a
+// internet de quem tá assistindo. Aqui só tentamos abrir o player embutido em tela cheia por fora;
+// em alguns celulares (principalmente iPhone) o navegador só libera a tela cheia a partir do botão
+// que já vem dentro do próprio vídeo — nesse caso, é só tocar no vídeo e depois no ícone ⛶ dele.
+function telaCheiaCameraHandler(id) {
+  // Coloca em tela cheia o quadro (moldura + logo), não só o vídeo — assim a marquinha da logo
+  // continua aparecendo por cima mesmo em tela cheia, quando aberta por esse botão.
+  const frame = document.getElementById(`camera-frame-${id}`);
+  if (!frame) return;
+  const req = frame.requestFullscreen || frame.webkitRequestFullscreen || frame.webkitEnterFullscreen || frame.mozRequestFullScreen;
+  if (!req) { alert('Esse navegador não deixa abrir a tela cheia por fora do vídeo. Toque no vídeo e use o ícone de tela cheia dele mesmo (geralmente no canto inferior direito) — nesse caso a logo não aparece, porque aí quem controla é o próprio YouTube.'); return; }
+  try { req.call(frame); } catch (e) { console.error('Falha ao abrir tela cheia', e); }
 }
 // Inscrição feita pelo próprio admin (ex: anotou no balcão) entra do mesmo jeito que uma inscrição
 // pública: pendente até alguém (o próprio admin) clicar em "marcar pago" — assim toda cobrança passa
@@ -2554,6 +2697,64 @@ function gerarHorariosHandler(catKey) {
     cursorMin += duracao;
   });
   persist({ ...state, agendamentos });
+}
+
+// Troca dois jogos de lugar na agenda: primeiro clique marca o jogo, segundo clique (em outro jogo)
+// troca quadra (quando existe — só faz sentido no Americano, que tem quadra fixa por partida; no
+// Torneio/chaves não existe esse conceito, então só o horário troca) e data/horário entre os dois.
+// Clicar de novo no mesmo jogo cancela a seleção.
+function marcarTrocarJogoHandler(matchId) {
+  if (jogoSelecionadoParaTroca === matchId) { jogoSelecionadoParaTroca = null; render(); return; }
+  if (!jogoSelecionadoParaTroca) { jogoSelecionadoParaTroca = matchId; render(); return; }
+  trocarJogosHandler(jogoSelecionadoParaTroca, matchId);
+  jogoSelecionadoParaTroca = null;
+}
+function trocarJogosHandler(idA, idB) {
+  let courtA, courtB;
+  Object.values(state.rounds || {}).forEach((rodadas) => {
+    rodadas.forEach((rd) => rd.matches.forEach((m) => {
+      if (m.id === idA) courtA = m.court;
+      if (m.id === idB) courtB = m.court;
+    }));
+  });
+  let rounds = state.rounds;
+  if (courtA !== undefined && courtB !== undefined) {
+    rounds = {};
+    Object.keys(state.rounds).forEach((catKey) => {
+      rounds[catKey] = state.rounds[catKey].map((rd) => ({
+        ...rd,
+        matches: rd.matches.map((m) => {
+          if (m.id === idA) return { ...m, court: courtB };
+          if (m.id === idB) return { ...m, court: courtA };
+          return m;
+        }),
+      }));
+    });
+  }
+  const agA = state.agendamentos[idA] || { data: '', hora: '' };
+  const agB = state.agendamentos[idB] || { data: '', hora: '' };
+  persist({ ...state, rounds, agendamentos: { ...state.agendamentos, [idA]: agB, [idB]: agA } });
+}
+// Troca os confrontos de duas rodadas do Americano entre si (ex: os jogos que sairiam na rodada 2
+// passam a acontecer na 4, e vice-versa) — útil quando o sorteio já saiu mas a ordem de disputa
+// precisa mudar. Só o CONTEÚDO (jogos/duplas/folgas) troca de lugar — o número "Rodada X" mostrado
+// continua andando em sequência (1, 2, 3...), e como cada jogo carrega seu próprio id, qualquer
+// horário/quadra já marcado pra ele viaja junto automaticamente, sem precisar reconfigurar nada.
+function trocarRodadasHandler(catKey, indiceA, indiceB) {
+  const rodadas = [...(state.rounds[catKey] || [])];
+  if (!rodadas[indiceA] || !rodadas[indiceB] || rodadas[indiceA].isFinal || rodadas[indiceB].isFinal) return;
+  const { matches: matchesA, byes: byesA } = rodadas[indiceA];
+  rodadas[indiceA] = { ...rodadas[indiceA], matches: rodadas[indiceB].matches, byes: rodadas[indiceB].byes };
+  rodadas[indiceB] = { ...rodadas[indiceB], matches: matchesA, byes: byesA };
+  persist({ ...state, rounds: { ...state.rounds, [catKey]: rodadas } });
+}
+function marcarTrocarRodadaHandler(catKey, indice) {
+  if (rodadaSelecionadaParaTroca && rodadaSelecionadaParaTroca.catKey === catKey && rodadaSelecionadaParaTroca.indice === indice) {
+    rodadaSelecionadaParaTroca = null; render(); return;
+  }
+  if (!rodadaSelecionadaParaTroca) { rodadaSelecionadaParaTroca = { catKey, indice }; render(); return; }
+  if (rodadaSelecionadaParaTroca.catKey === catKey) trocarRodadasHandler(catKey, rodadaSelecionadaParaTroca.indice, indice);
+  rodadaSelecionadaParaTroca = null;
 }
 
 function gerarEliminatoriaSeNecessario(grupos, catKey, eliminatoriasAtuais) {
