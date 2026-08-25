@@ -1112,8 +1112,27 @@ function renderConfigModulo() {
 
 function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
   const cortesReais = Math.min(state.numCourts, maxCourts);
-  const justa = state.tipo !== 'chaves' && numJogadoras >= 4 ? distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds) : true;
   const numeroImpar = numJogadoras % 2 === 1;
+  // Pra múltiplo de 4, dá pra garantir cada dupla EXATAMENTE 1 vez (nem mais, nem menos) — usa o
+  // tamanho real de gerarRodadasComByesJustos (a mesma construção que generateSchedule de fato usa
+  // nesse caso, ver scheduling.js) em vez de uma fórmula separada, pra o número mostrado aqui nunca
+  // desalinhar do que o sorteio de rodadas realmente vai gerar. Pra quantidade que não é múltiplo de
+  // 4, só dá pra garantir jogos iguais (não zero repetição), então usa proximoRoundsValidoApartirDe.
+  const multiploDe4 = state.tipo !== 'chaves' && numJogadoras >= 4 && !numeroImpar && numJogadoras % 4 === 0;
+  const rodadasExatas = multiploDe4
+    ? gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), cortesReais).length
+    : (state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 && !numeroImpar ? proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds) : null);
+  // A fórmula distribuicaoEhJusta assume rodadas todas do mesmo tamanho — vale pro sorteio
+  // heurístico de sempre, mas não pra construção garantida (que tem rodadas de tamanho variável,
+  // pra caber nas quadras). Por isso, quando o número de rodadas escolhido bate exatamente com o
+  // que a construção garantida precisa, a resposta certa é sempre "sim, é justo" (comprovado pela
+  // própria construção) — sem isso, a tela chegou a mostrar um aviso de "não é justo" bem embaixo
+  // de um botão dizendo "jogos iguais pra todas" pro mesmo número de rodadas.
+  let justa;
+  if (state.tipo === 'chaves' || numJogadoras < 4) justa = true;
+  else if (multiploDe4 && state.numRounds === rodadasExatas) justa = true;
+  else if (multiploDe4 && state.numRounds > rodadasExatas) justa = distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds - rodadasExatas);
+  else justa = distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds);
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
@@ -1127,16 +1146,6 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
     ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 ? (numeroImpar ? `
       <div class="hint" style="text-align:left;margin-top:4px">Com número ímpar de jogadoras, "todos contra todos" não é uma opção prática (exigiria rodadas demais). Use o campo "jogos por jogadora" abaixo.</div>
     ` : (() => {
-      // Pra múltiplo de 4, dá pra garantir cada dupla EXATAMENTE 1 vez (nem mais, nem menos) —
-      // usa o tamanho real de gerarRodadasComByesJustos (a mesma construção que generateSchedule
-      // de fato usa nesse caso, ver scheduling.js) em vez de uma fórmula separada, pra o número
-      // mostrado aqui nunca desalinhar do que o sorteio de rodadas realmente vai gerar.
-      // Pra quantidade que não é múltiplo de 4, só dá pra garantir jogos iguais (não zero repetição),
-      // então usa proximoRoundsValidoApartirDe como antes.
-      const multiploDe4 = numJogadoras % 4 === 0;
-      const rodadasExatas = multiploDe4
-        ? gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), cortesReais).length
-        : proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds);
       const precisouAjustar = rodadasExatas > minRounds;
       const rotulo = multiploDe4 ? 'todos jogam com todos exatamente 1 vez, jogos iguais pra todas' : 'todos jogam com todos, jogos iguais pra todas';
       const explicacao = multiploDe4
