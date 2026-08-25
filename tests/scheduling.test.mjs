@@ -4,10 +4,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ativosPorRodadaReal, partidaJogada, gerarParceriasRoundRobin, generateSchedule,
-  computeStats, minRoundsForFullCoverage, minRoundsForGamesPerPlayer, distribuicaoEhJusta,
-  proximosRoundsValidos, proximoRoundsValidoApartirDe, generateGroups, computeGroupStandings,
-  nextPow2, roundName, seedOrder, repairSameGroupClashes, generateEliminationFromGroups,
-  allGroupMatchesScored,
+  gerarRodadasComByesJustos, computeStats, minRoundsForFullCoverage, minRoundsForGamesPerPlayer,
+  distribuicaoEhJusta, proximosRoundsValidos, proximoRoundsValidoApartirDe, generateGroups,
+  computeGroupStandings, nextPow2, roundName, seedOrder, repairSameGroupClashes,
+  generateEliminationFromGroups, allGroupMatchesScored,
 } from '../scheduling.js';
 
 const players = (n) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: `Jogadora ${i + 1}` }));
@@ -90,6 +90,59 @@ describe('generateSchedule', () => {
       assert.equal(new Set(emQuadra).size, 4);
       assert.equal(emQuadra.includes(rd.byes[0]), false);
     });
+  });
+
+  it('com quadras insuficientes pra caber todo mundo, ainda garante zero repetição de dupla e jogos iguais (via generateSchedule, não só a construção isolada)', () => {
+    // 12 jogadoras / 2 quadras: só 8 cabem por rodada, então tem folga toda rodada -- é exatamente
+    // o cenário que motivou essa função (generateSchedule tem que escolher o ramo certo sozinho).
+    const rounds = generateSchedule(players(12), 2, 18);
+    const parceriaCount = {};
+    const jogos = {};
+    players(12).forEach((p) => { jogos[p.id] = 0; });
+    rounds.forEach((rd) => rd.matches.forEach((m) => {
+      [m.teamA, m.teamB].forEach((team) => {
+        const key = [...team].sort().join('~');
+        parceriaCount[key] = (parceriaCount[key] || 0) + 1;
+        team.forEach((id) => { jogos[id]++; });
+      });
+    }));
+    assert.equal(Object.keys(parceriaCount).length, (12 * 11) / 2); // todas as 66 duplas aconteceram
+    Object.values(parceriaCount).forEach((c) => assert.equal(c, 1, 'nenhuma dupla pode repetir'));
+    const valoresJogos = Object.values(jogos);
+    assert.equal(new Set(valoresJogos).size, 1, 'todas as jogadoras devem ter a mesma quantidade de jogos');
+    assert.equal(valoresJogos[0], 11); // n-1 jogos cada, uma vez com cada uma das outras 11
+  });
+});
+
+describe('gerarRodadasComByesJustos', () => {
+  it('pra 4, 8, 12, 16 e 20 jogadoras / 2 quadras, cobre cada dupla exatamente 1 vez, com jogos e folgas iguais pra todas', () => {
+    for (const n of [4, 8, 12, 16, 20]) {
+      const rounds = gerarRodadasComByesJustos(players(n), 2);
+      const parceriaCount = {};
+      const jogos = {}; const byes = {};
+      players(n).forEach((p) => { jogos[p.id] = 0; byes[p.id] = 0; });
+      rounds.forEach((rd) => {
+        rd.byes.forEach((id) => { byes[id]++; });
+        rd.matches.forEach((m) => {
+          [m.teamA, m.teamB].forEach((team) => {
+            const key = [...team].sort().join('~');
+            parceriaCount[key] = (parceriaCount[key] || 0) + 1;
+            team.forEach((id) => { jogos[id]++; });
+          });
+        });
+      });
+      assert.equal(Object.keys(parceriaCount).length, (n * (n - 1)) / 2, `n=${n}: todas as duplas deveriam ter acontecido`);
+      Object.values(parceriaCount).forEach((c) => assert.equal(c, 1, `n=${n}: nenhuma dupla pode repetir`));
+      assert.equal(new Set(Object.values(jogos)).size, 1, `n=${n}: jogos deveriam ser iguais pra todas`);
+      assert.equal(new Set(Object.values(byes)).size, 1, `n=${n}: folgas deveriam ser iguais pra todas`);
+      assert.equal(Object.values(jogos)[0], n - 1, `n=${n}: cada jogadora deveria jogar exatamente n-1 partidas`);
+    }
+  });
+
+  it('quando as quadras já cabem todo mundo (sem folga), ainda cobre tudo em n-1 rodadas, sem sobra', () => {
+    const rounds = gerarRodadasComByesJustos(players(8), 2); // 2 quadras cabem exatamente 8 jogadoras
+    assert.equal(rounds.length, 7);
+    rounds.forEach((rd) => assert.equal(rd.byes.length, 0));
   });
 });
 

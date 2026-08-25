@@ -171,6 +171,103 @@ export function gerarRodadasGarantidas(players, numRounds) {
   });
   return rounds;
 }
+// Constrói o cronograma completo pra quando as quadras NÃO cabem todo mundo ao mesmo tempo
+// (numJogadoras % 4 === 0, mas a capacidade real das quadras é menor que numJogadoras): reaproveita
+// o método do círculo (gerarParceriasRoundRobin) pra fatiar cada "megarodada" — onde todo mundo
+// joga ao mesmo tempo, sem quadra limitando nada — em rodadas do tamanho real das quadras, e
+// recombina as sobras de megarodadas diferentes entre si (quando não compartilham jogadora) pra
+// desperdiçar o mínimo de rodadas possível. Resultado: cada uma das C(n,2) parcerias acontece
+// exatamente 1 vez — nem mais, nem menos — e jogos/folgas ficam idênticos pra todo mundo. Às vezes
+// fica 1 rodada acima do mínimo teórico absoluto (o casamento das sobras não garante o máximo
+// absoluto num grafo geral, só reduz o desperdício com algumas tentativas embaralhadas).
+export function gerarRodadasComByesJustos(players, numCourts) {
+  const playerIds = players.map((p) => p.id);
+  const maxParPorRodada = numCourts * 2;
+  const megarodadas = gerarParceriasRoundRobin(playerIds);
+
+  const gruposCheios = [];
+  const sobras = []; // { pares: [[a,b],...], jogadores: Set }
+  megarodadas.forEach((pares) => {
+    for (let i = 0; i < pares.length; i += maxParPorRodada) {
+      const grupo = pares.slice(i, i + maxParPorRodada);
+      if (grupo.length === maxParPorRodada) gruposCheios.push(grupo);
+      else sobras.push({ pares: grupo, jogadores: new Set(grupo.flat()) });
+    }
+  });
+
+  function tentarCasamento(sobrasList, tentativas) {
+    const N = sobrasList.length;
+    let melhor = { matchTo: Array(N).fill(-1), combinadas: 0 };
+    for (let t = 0; t < tentativas; t++) {
+      const ordem = [...Array(N).keys()].sort(() => Math.random() - 0.5);
+      const compat = Array.from({ length: N }, () => []);
+      for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+        let conflita = false;
+        sobrasList[i].jogadores.forEach((x) => { if (sobrasList[j].jogadores.has(x)) conflita = true; });
+        if (!conflita) { compat[i].push(j); compat[j].push(i); }
+      }
+      ordem.forEach((i) => { compat[i] = compat[i].sort(() => Math.random() - 0.5); });
+      const matchTo = Array(N).fill(-1);
+      function tenta(u, visitado) {
+        for (const v of compat[u]) {
+          if (visitado.has(v)) continue;
+          visitado.add(v);
+          if (matchTo[v] === -1 || tenta(matchTo[v], visitado)) { matchTo[v] = u; matchTo[u] = v; return true; }
+        }
+        return false;
+      }
+      ordem.forEach((u) => { if (matchTo[u] === -1) tenta(u, new Set()); });
+      let combinadas = 0;
+      matchTo.forEach((v) => { if (v !== -1) combinadas++; });
+      if (combinadas > melhor.combinadas) melhor = { matchTo, combinadas };
+      if (melhor.combinadas >= N - (N % 2)) break; // já casou o máximo possível
+    }
+    return melhor.matchTo;
+  }
+
+  const matchTo = tentarCasamento(sobras, 30);
+  const gruposSobra = [];
+  const usadoSobra = Array(sobras.length).fill(false);
+  for (let i = 0; i < sobras.length; i++) {
+    if (usadoSobra[i]) continue;
+    const par = matchTo[i];
+    if (par !== -1 && !usadoSobra[par]) {
+      gruposSobra.push([...sobras[i].pares, ...sobras[par].pares]);
+      usadoSobra[i] = true; usadoSobra[par] = true;
+    } else {
+      gruposSobra.push([...sobras[i].pares]);
+      usadoSobra[i] = true;
+    }
+  }
+
+  const todosGrupos = [...gruposCheios, ...gruposSobra];
+
+  // Dentro de cada rodada as parcerias já estão fixas (garantidas); só falta decidir quem enfrenta
+  // quem, minimizando repetição de ADVERSÁRIA como melhoria best-effort (sem garantia — só a
+  // parceria em si é garantida matematicamente pelo método do círculo).
+  const history = { partner: {}, opponent: {} };
+  return todosGrupos.map((equipes, idx) => {
+    const jogadoresNaRodada = new Set(equipes.flat());
+    const byes = playerIds.filter((id) => !jogadoresNaRodada.has(id));
+    const opcoes = particoesEmPares(equipes);
+    let melhorOpt = opcoes[0], melhorScore = Infinity;
+    opcoes.forEach((opt) => {
+      const score = opt.reduce((acc, [teamA, teamB]) => acc + scoreGroup({ teamA, teamB }, history), 0);
+      if (score < melhorScore) { melhorScore = score; melhorOpt = opt; }
+    });
+    (melhorOpt || []).forEach(([teamA, teamB]) => {
+      const pA = pairKey(teamA[0], teamA[1]), pB = pairKey(teamB[0], teamB[1]);
+      history.partner[pA] = (history.partner[pA] || 0) + 1;
+      history.partner[pB] = (history.partner[pB] || 0) + 1;
+      teamA.forEach((x) => teamB.forEach((y) => { const k = pairKey(x, y); history.opponent[k] = (history.opponent[k] || 0) + 1; }));
+    });
+    return {
+      round: idx + 1,
+      byes,
+      matches: (melhorOpt || []).map(([teamA, teamB], i) => ({ id: uid(), court: i + 1, teamA, teamB, scoreA: null, scoreB: null })),
+    };
+  });
+}
 export function generateSchedule(players, numCourts, numRounds) {
   const history = { partner: {}, opponent: {} };
   const n = players.length;
@@ -187,6 +284,26 @@ export function generateSchedule(players, numCourts, numRounds) {
     const garantidas = gerarRodadasGarantidas(players, numRounds);
     if (garantidas && garantidas.length) {
       garantidas.forEach((rd) => {
+        rd.matches.forEach((m) => {
+          const pA = pairKey(m.teamA[0], m.teamA[1]), pB = pairKey(m.teamB[0], m.teamB[1]);
+          history.partner[pA] = (history.partner[pA] || 0) + 1;
+          history.partner[pB] = (history.partner[pB] || 0) + 1;
+          m.teamA.forEach((x) => m.teamB.forEach((y) => { const k = pairKey(x, y); history.opponent[k] = (history.opponent[k] || 0) + 1; }));
+        });
+        rounds.push(rd);
+      });
+    }
+  }
+  // Cobre o que sobrou pro ramo acima: qualquer múltiplo de 4 que o ramo garantido não pegou —
+  // seja porque as quadras não cabem todo mundo (sobra folga toda rodada), seja porque n > 16 (onde
+  // a busca de cobertura de adversárias do ramo acima fica cara demais, mas essa construção aqui
+  // não faz aquela busca, então continua rápida). `rounds.length === 0` evita rodar de novo quando
+  // o ramo acima já resolveu. Só quando o número de rodadas pedido já é suficiente pra ela inteira;
+  // senão cai no sorteio de sempre, sem regressão pro caso de um número escolhido manualmente e menor.
+  if (rounds.length === 0 && n % 4 === 0 && n >= 4) {
+    const justas = gerarRodadasComByesJustos(players, numCourts);
+    if (justas.length && justas.length <= numRounds) {
+      justas.forEach((rd) => {
         rd.matches.forEach((m) => {
           const pA = pairKey(m.teamA[0], m.teamA[1]), pB = pairKey(m.teamB[0], m.teamB[1]);
           history.partner[pA] = (history.partner[pA] || 0) + 1;

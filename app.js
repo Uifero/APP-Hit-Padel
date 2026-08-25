@@ -5,7 +5,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, setPe
 import {
   uid, pairKey, DEFAULT_CAT, CATEGORIA_SUGESTOES, ativosPorRodadaReal, partidaJogada, defaultState,
   categoriaOf, categoriaKeys, scoreGroup, bestPairing, gerarParceriasRoundRobin, particoesEmPares,
-  coberturaDeConfrontos, buscarConfrontosCobrindoTudo, gerarRodadasGarantidas, generateSchedule,
+  coberturaDeConfrontos, buscarConfrontosCobrindoTudo, gerarRodadasGarantidas, gerarRodadasComByesJustos, generateSchedule,
   computeStats, minRoundsForFullCoverage, minRoundsForGamesPerPlayer, distribuicaoEhJusta,
   proximosRoundsValidos, proximoRoundsValidoApartirDe, roundsWithoutScores, generateFinalRound,
   shuffleArr, generateGroups, computeGroupStandings, nextPow2, roundName, seedOrder,
@@ -1127,15 +1127,24 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
     ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 ? (numeroImpar ? `
       <div class="hint" style="text-align:left;margin-top:4px">Com número ímpar de jogadoras, "todos contra todos" não é uma opção prática (exigiria rodadas demais). Use o campo "jogos por jogadora" abaixo.</div>
     ` : (() => {
-      // minRounds cobre "todo mundo contra todo mundo", mas sozinho pode não dar jogos iguais pra
-      // todas (ex.: 12 jogadoras / 2 quadras cobrem tudo em 17, mas só um múltiplo de 3 é justo, ou
-      // seja, precisa de 18). O botão sempre aplica proximoRoundsValidoApartirDe (ver bindEvents), então
-      // o texto mostra esse mesmo número exato — nunca um "~" que depois vira outro valor no clique.
-      const rodadasExatas = proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds);
+      // Pra múltiplo de 4, dá pra garantir cada dupla EXATAMENTE 1 vez (nem mais, nem menos) —
+      // usa o tamanho real de gerarRodadasComByesJustos (a mesma construção que generateSchedule
+      // de fato usa nesse caso, ver scheduling.js) em vez de uma fórmula separada, pra o número
+      // mostrado aqui nunca desalinhar do que o sorteio de rodadas realmente vai gerar.
+      // Pra quantidade que não é múltiplo de 4, só dá pra garantir jogos iguais (não zero repetição),
+      // então usa proximoRoundsValidoApartirDe como antes.
+      const multiploDe4 = numJogadoras % 4 === 0;
+      const rodadasExatas = multiploDe4
+        ? gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), cortesReais).length
+        : proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds);
       const precisouAjustar = rodadasExatas > minRounds;
+      const rotulo = multiploDe4 ? 'todos jogam com todos exatamente 1 vez, jogos iguais pra todas' : 'todos jogam com todos, jogos iguais pra todas';
+      const explicacao = multiploDe4
+        ? `são necessárias exatamente ${rodadasExatas} rodadas pra garantir que cada dupla de jogadoras aconteça exatamente 1 vez — nem mais, nem menos — com jogos e folgas idênticos pra todas`
+        : `são necessárias exatamente ${rodadasExatas} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez e que todas joguem a mesma quantidade de jogos${precisouAjustar ? ` (${minRounds} já cobririam todo mundo, mas só a partir de ${rodadasExatas} a quantidade de jogos fica igual pra todas)` : ''}`;
       return `
-      <button class="mode-btn" data-action="usar-cobertura-total" data-min="${minRounds}">Preencher com ${rodadasExatas} rodadas (todos jogam com todos, jogos iguais pra todas)</button>
-      <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), são necessárias exatamente ${rodadasExatas} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez e que todas joguem a mesma quantidade de jogos${precisouAjustar ? ` (${minRounds} já cobririam todo mundo, mas só a partir de ${rodadasExatas} a quantidade de jogos fica igual pra todas)` : ''}.</div>
+      <button class="mode-btn" data-action="usar-cobertura-total" data-min="${rodadasExatas}">Preencher com ${rodadasExatas} rodadas (${rotulo})</button>
+      <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), ${explicacao}.</div>
     `; })()) : ''}
     ${state.tipo !== 'chaves' ? `
       <div class="field" style="margin-top:10px">
@@ -1757,7 +1766,13 @@ function bindEvents() {
       const catKey = currentCategoria();
       const numJogadoras = state.players.filter((p) => categoriaOf(p) === catKey).length;
       const minimo = Number(el.dataset.min);
-      const rodadas = proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
+      // Múltiplo de 4: o número exato já vem pronto de gerarRodadasComByesJustos (mesma construção
+      // que generateSchedule usa de fato — ver scheduling.js), não passa por proximoRoundsValidoApartirDe,
+      // que usa uma fórmula de "jogos iguais" diferente e pode divergir (ex.: 20 jogadoras/2 quadras:
+      // a construção real precisa de 49 rodadas, mas essa fórmula "arredondaria" pra 50).
+      const rodadas = numJogadoras % 4 === 0
+        ? gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), state.numCourts).length
+        : proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
       persist({ ...state, numRounds: Math.min(60, rodadas) });
     });
     if (action === 'calcular-rodadas-por-jogos') el.addEventListener('click', () => {
