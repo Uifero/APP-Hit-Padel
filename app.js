@@ -1126,10 +1126,17 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
     ` : ''}
     ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 ? (numeroImpar ? `
       <div class="hint" style="text-align:left;margin-top:4px">Com número ímpar de jogadoras, "todos contra todos" não é uma opção prática (exigiria rodadas demais). Use o campo "jogos por jogadora" abaixo.</div>
-    ` : `
-      <button class="mode-btn" data-action="usar-cobertura-total" data-min="${minRounds}">Preencher com ~${minRounds} rodadas (todos jogam com todos)</button>
-      <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), seriam necessárias ~${minRounds} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez.</div>
-    `) : ''}
+    ` : (() => {
+      // minRounds cobre "todo mundo contra todo mundo", mas sozinho pode não dar jogos iguais pra
+      // todas (ex.: 12 jogadoras / 2 quadras cobrem tudo em 17, mas só um múltiplo de 3 é justo, ou
+      // seja, precisa de 18). O botão sempre aplica proximoRoundsValidoApartirDe (ver bindEvents), então
+      // o texto mostra esse mesmo número exato — nunca um "~" que depois vira outro valor no clique.
+      const rodadasExatas = proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds);
+      const precisouAjustar = rodadasExatas > minRounds;
+      return `
+      <button class="mode-btn" data-action="usar-cobertura-total" data-min="${minRounds}">Preencher com ${rodadasExatas} rodadas (todos jogam com todos, jogos iguais pra todas)</button>
+      <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), são necessárias exatamente ${rodadasExatas} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez e que todas joguem a mesma quantidade de jogos${precisouAjustar ? ` (${minRounds} já cobririam todo mundo, mas só a partir de ${rodadasExatas} a quantidade de jogos fica igual pra todas)` : ''}.</div>
+    `; })()) : ''}
     ${state.tipo !== 'chaves' ? `
       <div class="field" style="margin-top:10px">
         <label>Ou escolha quantos jogos cada jogadora deve jogar</label>
