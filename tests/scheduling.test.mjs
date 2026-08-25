@@ -95,17 +95,27 @@ describe('generateSchedule', () => {
   it('com quadras insuficientes pra caber todo mundo, ainda garante zero repetição de dupla e jogos iguais (via generateSchedule, não só a construção isolada)', () => {
     // 12 jogadoras / 2 quadras: só 8 cabem por rodada, então tem folga toda rodada -- é exatamente
     // o cenário que motivou essa função (generateSchedule tem que escolher o ramo certo sozinho).
-    const rounds = generateSchedule(players(12), 2, 18);
+    // 17 é o mínimo matemático absoluto (ceil(66 pares / 4 pares por rodada)) -- a construção acha
+    // o casamento ótimo das sobras entre megarodadas, então bate certinho, sem rodada de sobra.
+    const rounds = generateSchedule(players(12), 2, 17);
+    assert.equal(rounds.length, 17);
     const parceriaCount = {};
     const jogos = {};
     players(12).forEach((p) => { jogos[p.id] = 0; });
-    rounds.forEach((rd) => rd.matches.forEach((m) => {
-      [m.teamA, m.teamB].forEach((team) => {
-        const key = [...team].sort().join('~');
-        parceriaCount[key] = (parceriaCount[key] || 0) + 1;
-        team.forEach((id) => { jogos[id]++; });
+    rounds.forEach((rd) => {
+      const jogadorasNaRodada = new Set();
+      rd.matches.forEach((m) => {
+        [m.teamA, m.teamB].forEach((team) => {
+          const key = [...team].sort().join('~');
+          parceriaCount[key] = (parceriaCount[key] || 0) + 1;
+          team.forEach((id) => {
+            jogos[id]++;
+            assert.equal(jogadorasNaRodada.has(id), false, `jogadora ${id} escalada em 2 partidas na mesma rodada`);
+            jogadorasNaRodada.add(id);
+          });
+        });
       });
-    }));
+    });
     assert.equal(Object.keys(parceriaCount).length, (12 * 11) / 2); // todas as 66 duplas aconteceram
     Object.values(parceriaCount).forEach((c) => assert.equal(c, 1, 'nenhuma dupla pode repetir'));
     const valoresJogos = Object.values(jogos);
@@ -115,19 +125,30 @@ describe('generateSchedule', () => {
 });
 
 describe('gerarRodadasComByesJustos', () => {
-  it('pra 4, 8, 12, 16 e 20 jogadoras / 2 quadras, cobre cada dupla exatamente 1 vez, com jogos e folgas iguais pra todas', () => {
+  it('pra 4, 8, 12, 16 e 20 jogadoras / 2 quadras, cobre cada dupla exatamente 1 vez, com jogos e folgas iguais pra todas, no mínimo exato de rodadas', () => {
+    // mínimo teórico absoluto = ceil(C(n,2) / (numCourts*2)) -- confirma que a construção não
+    // desperdiça rodada nenhuma além do estritamente necessário.
+    const minimoTeorico = { 4: 2, 8: 7, 12: 17, 16: 30, 20: 48 };
     for (const n of [4, 8, 12, 16, 20]) {
       const rounds = gerarRodadasComByesJustos(players(n), 2);
+      assert.equal(rounds.length, minimoTeorico[n], `n=${n}: deveria bater o mínimo teórico de rodadas`);
       const parceriaCount = {};
       const jogos = {}; const byes = {};
       players(n).forEach((p) => { jogos[p.id] = 0; byes[p.id] = 0; });
       rounds.forEach((rd) => {
         rd.byes.forEach((id) => { byes[id]++; });
+        const jogadorasNaRodada = new Set();
         rd.matches.forEach((m) => {
           [m.teamA, m.teamB].forEach((team) => {
             const key = [...team].sort().join('~');
             parceriaCount[key] = (parceriaCount[key] || 0) + 1;
-            team.forEach((id) => { jogos[id]++; });
+            team.forEach((id) => {
+              jogos[id]++;
+              // Regressão: uma versão anterior chegou a escalar a mesma jogadora em 2 partidas
+              // simultâneas na mesma rodada quando combinava sobras de megarodadas diferentes.
+              assert.equal(jogadorasNaRodada.has(id), false, `n=${n}: jogadora ${id} escalada em 2 partidas na mesma rodada`);
+              jogadorasNaRodada.add(id);
+            });
           });
         });
       });
@@ -143,6 +164,16 @@ describe('gerarRodadasComByesJustos', () => {
     const rounds = gerarRodadasComByesJustos(players(8), 2); // 2 quadras cabem exatamente 8 jogadoras
     assert.equal(rounds.length, 7);
     rounds.forEach((rd) => assert.equal(rd.byes.length, 0));
+  });
+
+  it('é determinística: mesma entrada, sempre o mesmo número de rodadas', () => {
+    // Regressão: uma versão anterior usava Math.random() no casamento das sobras, então o número
+    // de rodadas variava de chamada pra chamada -- o que quebrava a premissa de que o número
+    // mostrado na tela sempre bate com o que a geração de verdade produz.
+    for (const n of [12, 20]) {
+      const comprimentos = Array.from({ length: 8 }, () => gerarRodadasComByesJustos(players(n), 2).length);
+      assert.equal(new Set(comprimentos).size, 1, `n=${n}: o número de rodadas não deveria variar entre chamadas`);
+    }
   });
 });
 
