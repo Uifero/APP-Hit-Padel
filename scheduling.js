@@ -178,8 +178,10 @@ export function gerarRodadasGarantidas(players, numRounds) {
 // recombina as sobras de megarodadas diferentes entre si (quando não compartilham jogadora) pra
 // desperdiçar o mínimo de rodadas possível. Resultado: cada uma das C(n,2) parcerias acontece
 // exatamente 1 vez — nem mais, nem menos — e jogos/folgas ficam idênticos pra todo mundo. Às vezes
-// fica 1 rodada acima do mínimo teórico absoluto (o casamento das sobras não garante o máximo
-// absoluto num grafo geral, só reduz o desperdício com algumas tentativas embaralhadas).
+// fica 1 rodada acima do mínimo teórico absoluto (o casamento das sobras é determinístico, sem
+// sorteio nenhum — ver tentarCasamento — então não garante o máximo absoluto num grafo geral, mas
+// SEMPRE dá o mesmo resultado pro mesmo (numJogadoras, numCourts). Isso é de propósito: precisa ser
+// estável pra o número mostrado na tela nunca desalinhar do que a geração de verdade produz.
 export function gerarRodadasComByesJustos(players, numCourts) {
   const playerIds = players.map((p) => p.id);
   const maxParPorRodada = numCourts * 2;
@@ -195,37 +197,34 @@ export function gerarRodadasComByesJustos(players, numCourts) {
     }
   });
 
-  function tentarCasamento(sobrasList, tentativas) {
+  // Casamento determinístico (Kuhn, uma passada só, ordem fixa) — de propósito SEM Math.random():
+  // o número de rodadas dessa função precisa ser sempre o mesmo pra um dado (numJogadoras,
+  // numCourts), senão o número mostrado na tela e o que a geração de verdade produz podem
+  // divergir (foi exatamente esse bug que motivou trocar a versão embaralhada por essa aqui).
+  // Não é garantido achar o casamento máximo absoluto num grafo geral (isso pediria o algoritmo
+  // de Blossom), mas é estável: mesma entrada, mesma saída, sempre.
+  function tentarCasamento(sobrasList) {
     const N = sobrasList.length;
-    let melhor = { matchTo: Array(N).fill(-1), combinadas: 0 };
-    for (let t = 0; t < tentativas; t++) {
-      const ordem = [...Array(N).keys()].sort(() => Math.random() - 0.5);
-      const compat = Array.from({ length: N }, () => []);
-      for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
-        let conflita = false;
-        sobrasList[i].jogadores.forEach((x) => { if (sobrasList[j].jogadores.has(x)) conflita = true; });
-        if (!conflita) { compat[i].push(j); compat[j].push(i); }
-      }
-      ordem.forEach((i) => { compat[i] = compat[i].sort(() => Math.random() - 0.5); });
-      const matchTo = Array(N).fill(-1);
-      function tenta(u, visitado) {
-        for (const v of compat[u]) {
-          if (visitado.has(v)) continue;
-          visitado.add(v);
-          if (matchTo[v] === -1 || tenta(matchTo[v], visitado)) { matchTo[v] = u; matchTo[u] = v; return true; }
-        }
-        return false;
-      }
-      ordem.forEach((u) => { if (matchTo[u] === -1) tenta(u, new Set()); });
-      let combinadas = 0;
-      matchTo.forEach((v) => { if (v !== -1) combinadas++; });
-      if (combinadas > melhor.combinadas) melhor = { matchTo, combinadas };
-      if (melhor.combinadas >= N - (N % 2)) break; // já casou o máximo possível
+    const compat = Array.from({ length: N }, () => []);
+    for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+      let conflita = false;
+      sobrasList[i].jogadores.forEach((x) => { if (sobrasList[j].jogadores.has(x)) conflita = true; });
+      if (!conflita) { compat[i].push(j); compat[j].push(i); }
     }
-    return melhor.matchTo;
+    const matchTo = Array(N).fill(-1);
+    function tenta(u, visitado) {
+      for (const v of compat[u]) {
+        if (visitado.has(v)) continue;
+        visitado.add(v);
+        if (matchTo[v] === -1 || tenta(matchTo[v], visitado)) { matchTo[v] = u; matchTo[u] = v; return true; }
+      }
+      return false;
+    }
+    for (let u = 0; u < N; u++) { if (matchTo[u] === -1) tenta(u, new Set()); }
+    return matchTo;
   }
 
-  const matchTo = tentarCasamento(sobras, 30);
+  const matchTo = tentarCasamento(sobras);
   const gruposSobra = [];
   const usadoSobra = Array(sobras.length).fill(false);
   for (let i = 0; i < sobras.length; i++) {
