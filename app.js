@@ -1110,29 +1110,53 @@ function renderConfigModulo() {
   `;
 }
 
+// Pra múltiplo de 4 (e número par), a construção garantida (gerarRodadasComByesJustos, ver
+// scheduling.js) cobre cada dupla exatamente 1 vez com jogos iguais num número fixo de rodadas.
+// Devolve null quando essa construção não se aplica (ímpar, <4, ou "chaves").
+function rodadasExatasGarantidas(numJogadoras, numCourts) {
+  const numeroImpar = numJogadoras % 2 === 1;
+  if (state.tipo === 'chaves' || numJogadoras < 4 || numeroImpar || numJogadoras % 4 !== 0) return null;
+  return gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), numCourts).length;
+}
+// A fórmula distribuicaoEhJusta assume rodadas todas do mesmo tamanho — vale pro sorteio heurístico
+// de sempre, mas não pra construção garantida (que tem rodadas de tamanho variável, pra caber nas
+// quadras). Essa função sabe reconhecer os dois casos, pra nunca dar uma resposta diferente na tela
+// de "Quadras e Rodadas" e no botão de sortear (foi exatamente essa divergência que já apareceu 2
+// vezes: um aviso de "não é justo" embaixo de um botão dizendo "jogos iguais pra todas", e depois um
+// alert de bloqueio no sorteio pro mesmo número de rodadas que o botão tinha acabado de preencher).
+function distribuicaoRodadasEhJustaComExato(numJogadoras, numCourts, numRounds, rodadasExatas) {
+  if (rodadasExatas == null) return distribuicaoEhJusta(numJogadoras, numCourts, numRounds);
+  if (numRounds === rodadasExatas) return true;
+  if (numRounds > rodadasExatas) return distribuicaoEhJusta(numJogadoras, numCourts, numRounds - rodadasExatas);
+  return distribuicaoEhJusta(numJogadoras, numCourts, numRounds);
+}
+function distribuicaoRodadasEhJusta(numJogadoras, numCourts, numRounds) {
+  return distribuicaoRodadasEhJustaComExato(numJogadoras, numCourts, numRounds, rodadasExatasGarantidas(numJogadoras, numCourts));
+}
+// Mesma lista que proximosRoundsValidos, mas ciente da construção garantida (inclui o número exato
+// dela e os excedentes que também ficam justos por cima, além dos valores puramente heurísticos).
+function proximasRodadasJustasReais(numJogadoras, numCourts, quantidade = 6, maxRounds = 60) {
+  const rodadasExatas = rodadasExatasGarantidas(numJogadoras, numCourts);
+  const validos = [];
+  for (let n = 1; n <= maxRounds && validos.length < quantidade; n++) {
+    if (distribuicaoRodadasEhJustaComExato(numJogadoras, numCourts, n, rodadasExatas)) validos.push(n);
+  }
+  return validos;
+}
+
 function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
   const cortesReais = Math.min(state.numCourts, maxCourts);
   const numeroImpar = numJogadoras % 2 === 1;
+  const multiploDe4 = state.tipo !== 'chaves' && numJogadoras >= 4 && !numeroImpar && numJogadoras % 4 === 0;
   // Pra múltiplo de 4, dá pra garantir cada dupla EXATAMENTE 1 vez (nem mais, nem menos) — usa o
   // tamanho real de gerarRodadasComByesJustos (a mesma construção que generateSchedule de fato usa
-  // nesse caso, ver scheduling.js) em vez de uma fórmula separada, pra o número mostrado aqui nunca
-  // desalinhar do que o sorteio de rodadas realmente vai gerar. Pra quantidade que não é múltiplo de
-  // 4, só dá pra garantir jogos iguais (não zero repetição), então usa proximoRoundsValidoApartirDe.
-  const multiploDe4 = state.tipo !== 'chaves' && numJogadoras >= 4 && !numeroImpar && numJogadoras % 4 === 0;
+  // nesse caso) em vez de uma fórmula separada, pra o número mostrado aqui nunca desalinhar do que
+  // o sorteio de rodadas realmente vai gerar. Pra quantidade que não é múltiplo de 4, só dá pra
+  // garantir jogos iguais (não zero repetição), então usa proximoRoundsValidoApartirDe.
   const rodadasExatas = multiploDe4
-    ? gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), cortesReais).length
+    ? rodadasExatasGarantidas(numJogadoras, cortesReais)
     : (state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 && !numeroImpar ? proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds) : null);
-  // A fórmula distribuicaoEhJusta assume rodadas todas do mesmo tamanho — vale pro sorteio
-  // heurístico de sempre, mas não pra construção garantida (que tem rodadas de tamanho variável,
-  // pra caber nas quadras). Por isso, quando o número de rodadas escolhido bate exatamente com o
-  // que a construção garantida precisa, a resposta certa é sempre "sim, é justo" (comprovado pela
-  // própria construção) — sem isso, a tela chegou a mostrar um aviso de "não é justo" bem embaixo
-  // de um botão dizendo "jogos iguais pra todas" pro mesmo número de rodadas.
-  let justa;
-  if (state.tipo === 'chaves' || numJogadoras < 4) justa = true;
-  else if (multiploDe4 && state.numRounds === rodadasExatas) justa = true;
-  else if (multiploDe4 && state.numRounds > rodadasExatas) justa = distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds - rodadasExatas);
-  else justa = distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds);
+  const justa = state.tipo !== 'chaves' && numJogadoras >= 4 ? distribuicaoRodadasEhJusta(numJogadoras, cortesReais, state.numRounds) : true;
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
@@ -1140,7 +1164,7 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
     </div>
     ${state.tipo !== 'chaves' && numJogadoras >= 4 ? `
       <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:-8px;margin-bottom:10px">
-        ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas.${numeroImpar ? ' Com número ímpar de jogadoras, use o campo "jogos por jogadora" abaixo, que calcula um número de rodadas que funciona automaticamente.' : ` Números que funcionam: ${proximosRoundsValidos(numJogadoras, cortesReais).join(', ')}.`}`}
+        ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas.${numeroImpar ? ' Com número ímpar de jogadoras, use o campo "jogos por jogadora" abaixo, que calcula um número de rodadas que funciona automaticamente.' : ` Números que funcionam: ${proximasRodadasJustasReais(numJogadoras, cortesReais).join(', ')}.`}`}
       </div>
     ` : ''}
     ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 ? (numeroImpar ? `
@@ -2263,12 +2287,12 @@ function sortearHandler() {
     if (catPlayers.length < 4) continue;
     const maxCourts = Math.max(1, Math.floor(catPlayers.length / 4));
     const courtsReais = Math.min(state.numCourts, maxCourts);
-    if (!distribuicaoEhJusta(catPlayers.length, courtsReais, state.numRounds)) {
+    if (!distribuicaoRodadasEhJusta(catPlayers.length, courtsReais, state.numRounds)) {
       const catLabelTxt = catKey === DEFAULT_CAT ? '' : ` na categoria "${catLabel(catKey)}"`;
       const numeroImpar = catPlayers.length % 2 === 1;
       const sugestao = numeroImpar
         ? 'Com número ímpar de jogadoras, não dá pra sortear direto com esse número de rodadas. Use o campo "quantos jogos cada jogadora deve jogar" (em Quadras e Rodadas) — ele calcula e preenche um número de rodadas que funciona automaticamente.'
-        : `Rodadas que resultam em jogos 100% iguais pra todas: ${proximosRoundsValidos(catPlayers.length, courtsReais).join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`;
+        : `Rodadas que resultam em jogos 100% iguais pra todas: ${proximasRodadasJustasReais(catPlayers.length, courtsReais).join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`;
       alert(`Com ${catPlayers.length} jogadoras${catLabelTxt} e ${courtsReais} quadra(s), ${state.numRounds} rodada(s) NÃO permite que todas joguem exatamente a mesma quantidade de jogos — alguém jogaria a mais e alguém a menos.\n\n${sugestao}`);
       return;
     }
