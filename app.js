@@ -2394,16 +2394,27 @@ function trocarJogosHandler(idA, idB) {
 }
 // Troca os confrontos de duas rodadas do Americano entre si (ex: os jogos que sairiam na rodada 2
 // passam a acontecer na 4, e vice-versa) — útil quando o sorteio já saiu mas a ordem de disputa
-// precisa mudar. Só o CONTEÚDO (jogos/duplas/folgas) troca de lugar — o número "Rodada X" mostrado
-// continua andando em sequência (1, 2, 3...), e como cada jogo carrega seu próprio id, qualquer
-// horário/quadra já marcado pra ele viaja junto automaticamente, sem precisar reconfigurar nada.
+// precisa mudar. O CONTEÚDO (jogos/duplas/folgas) troca de posição, e o horário/data acompanha a
+// POSIÇÃO da rodada (não o jogo) — ou seja, a rodada que era "das 9h" continua sendo a rodada das
+// 9h, só que agora com as duplas que antes jogariam na outra. Mesma lógica de trocarJogosHandler,
+// só que aplicada a todos os jogos da rodada de uma vez (dentro da mesma rodada, todo mundo já
+// compartilha o mesmo horário — ver agendamentosAutoParaRounds).
 function trocarRodadasHandler(catKey, indiceA, indiceB) {
   const rodadas = [...(state.rounds[catKey] || [])];
   if (!rodadas[indiceA] || !rodadas[indiceB] || rodadas[indiceA].isFinal || rodadas[indiceB].isFinal) return;
   const { matches: matchesA, byes: byesA } = rodadas[indiceA];
-  rodadas[indiceA] = { ...rodadas[indiceA], matches: rodadas[indiceB].matches, byes: rodadas[indiceB].byes };
+  const { matches: matchesB, byes: byesB } = rodadas[indiceB];
+  rodadas[indiceA] = { ...rodadas[indiceA], matches: matchesB, byes: byesB };
   rodadas[indiceB] = { ...rodadas[indiceB], matches: matchesA, byes: byesA };
-  persist({ ...state, rounds: { ...state.rounds, [catKey]: rodadas } });
+
+  const semHorario = { data: '', hora: '' };
+  const horaA = matchesA[0] ? (state.agendamentos[matchesA[0].id] || semHorario) : semHorario;
+  const horaB = matchesB[0] ? (state.agendamentos[matchesB[0].id] || semHorario) : semHorario;
+  const agendamentos = { ...state.agendamentos };
+  matchesB.forEach((m) => { agendamentos[m.id] = horaA; });
+  matchesA.forEach((m) => { agendamentos[m.id] = horaB; });
+
+  persist({ ...state, rounds: { ...state.rounds, [catKey]: rodadas }, agendamentos });
 }
 function marcarTrocarRodadaHandler(catKey, indice) {
   if (rodadaSelecionadaParaTroca && rodadaSelecionadaParaTroca.catKey === catKey && rodadaSelecionadaParaTroca.indice === indice) {
