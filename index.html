@@ -250,10 +250,28 @@
   .modal-actions .btn-primary{border:none;}
 
   .hp-footer{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.5;background:var(--navy);padding:5px 12px;border-radius:999px;}
+
+  #print-area{display:none;}
+  @media print{
+    body *{visibility:hidden;}
+    #print-area, #print-area *{visibility:visible;}
+    #print-area{display:block;position:absolute;top:0;left:0;width:100%;padding:24px;color:#000;background:#fff;}
+    #print-area h1{font-family:Arial,sans-serif;font-size:20px;margin:0 0 4px;}
+    #print-area .print-sub{font-family:Arial,sans-serif;font-size:12px;color:#444;margin-bottom:14px;}
+    #print-area .print-table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;}
+    #print-area .print-table th, #print-area .print-table td{border:1px solid #999;padding:6px 8px;text-align:left;}
+    #print-area .print-table th{background:#eee;}
+  }
 </style>
 </head>
 <body>
   <div id="root"><div class="loading">Carregando quadra...</div></div>
+  <div id="print-area"></div>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch((e) => console.error('Falha ao registrar service worker', e)); });
+    }
+  </script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

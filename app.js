@@ -44,6 +44,14 @@ function agendarAvisoSeDemorar() {
   timerAvisoDemora = setTimeout(() => {
     avisoDemoraMostrado = true;
     timerAvisoDemora = null;
+    // Sem resposta do Firebase depois de 4s e ninguém logado como admin: tenta a última versão
+    // salva neste aparelho em vez de deixar a jogadora presa no spinner. Só pra visão pública —
+    // admin nunca edita em cima de um estado potencialmente desatualizado (ver persist()/gravação
+    // do cache em carregarTorneioAtual).
+    if (!state && !isAdmin && currentTournamentId) {
+      const cache = lerCacheTorneio(currentTournamentId);
+      if (cache) { state = cache; usandoCacheOffline = true; }
+    }
     render();
   }, 4000);
 }
@@ -52,10 +60,18 @@ function cancelarAvisoDemora() {
   avisoDemoraMostrado = false;
 }
 const AVISO_DEMORA_HTML = '<div class="hint" style="margin-top:10px">Isso está demorando mais que o normal — geralmente é a conexão do aparelho. Continue aguardando ou tente recarregar a página.</div>';
+function torneioCacheKey(tid) { return `hitpadel_cache_${tid}`; }
+function lerCacheTorneio(tid) {
+  try {
+    const raw = localStorage.getItem(torneioCacheKey(tid));
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
 let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
 let rodadasEstadoManual = {}; // chave "catKey-ri" -> true (recolhida) / false (aberta), fixado explicitamente ao clicar
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
 let unsubscribeTournament = null;
+let usandoCacheOffline = false; // true quando o estado exibido veio do localStorage (sem sinal), não do Firebase ao vivo
 let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
 let novoTorneioNome = '';
 let tvSlide = 0;
@@ -157,11 +173,15 @@ async function toggleNotificacoesHandler() {
 function carregarTorneioAtual() {
   if (unsubscribeTournament) { unsubscribeTournament(); unsubscribeTournament = null; }
   rodadasEstadoManual = {};
+  usandoCacheOffline = false;
   if (!currentTournamentId) { state = null; return; }
-  const r = ref(db, 'torneios/' + currentTournamentId);
+  const tid = currentTournamentId;
+  const r = ref(db, 'torneios/' + tid);
   unsubscribeTournament = onValue(r, (snap) => {
     if (snap.exists()) { state = { ...defaultState(), ...snap.val() }; }
     else { state = defaultState(); set(r, state); }
+    usandoCacheOffline = false;
+    try { localStorage.setItem(torneioCacheKey(tid), JSON.stringify(state)); } catch (e) { /* localStorage cheio/bloqueado: cache offline só não fica disponível, resto do app segue normal */ }
     verificarNovasInscricoes(state);
     render();
   });
@@ -376,6 +396,7 @@ function render() {
       </div>
     </header>
     <main class="hp-main">
+      ${usandoCacheOffline ? `<div class="alerta-atraso">📡 Sem conexão agora — mostrando a última versão salva neste aparelho. Atualiza sozinho assim que a internet voltar.</div>` : ''}
       ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams) : ''}
       ${ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
       ${!isAdmin && (catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
@@ -996,6 +1017,8 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
       ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
       <button class="mode-btn" style="width:100%;margin-top:10px" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
       <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="mostrar-qr">🔗 Gerar QR Code do torneio</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="exportar-pdf">🖨️ Exportar agenda/placar em PDF</button>
     </div>
   </section>
   <section class="card cta-card">
@@ -1740,6 +1763,8 @@ function bindEvents() {
     if (action === 'abrir-modo-tv') el.addEventListener('click', () => {
       window.open(`${window.location.origin}${window.location.pathname}?t=${currentTournamentId}&tv=1`, '_blank');
     });
+    if (action === 'mostrar-qr') el.addEventListener('click', mostrarQrHandler);
+    if (action === 'exportar-pdf') el.addEventListener('click', () => exportarPdfHandler(currentCategoria()));
     if (action === 'toggle-rodada') el.addEventListener('click', () => {
       const chave = el.dataset.chave;
       const atualRecolhida = el.dataset.recolhida === '1';
@@ -1946,6 +1971,63 @@ function compartilharTorneioHandler() {
   const link = `${window.location.origin}${window.location.pathname}?t=${currentTournamentId}`;
   const mensagem = `🎾 ${state.name}\nAcompanhe rodadas, ranking e resultados ao vivo, direto do celular:\n${link}`;
   window.open(`https://wa.me/?text=${encodeURIComponent(mensagem)}`, '_blank');
+}
+// Gera a imagem do QR num serviço externo (api.qrserver.com) — o link em si já é público (mesmo que
+// o botão "Compartilhar no WhatsApp" manda pra fora), então não há dado sensível envolvido.
+function renderQrModal(link) {
+  const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data=${encodeURIComponent(link)}`;
+  return `<div class="modal-bg" data-action="close-pin-bg"><div class="modal" data-action="stop-bubble">
+    <div class="modal-title">QR Code do torneio</div>
+    <img src="${qrSrc}" alt="QR Code do link do torneio" style="display:block;width:100%;max-width:260px;margin:0 auto 12px;border-radius:12px;background:#fff;padding:10px" />
+    <div class="hint" style="margin-bottom:10px">Aponte a câmera do celular pra abrir o torneio direto.</div>
+    <div class="modal-actions"><button class="btn-primary" data-action="close-pin" style="width:100%">Fechar</button></div>
+  </div></div>`;
+}
+function mostrarQrHandler() {
+  if (!currentTournamentId) return;
+  if (!state.visivelPublico) {
+    if (!confirm('Esse torneio ainda está oculto pro público — quem escanear vai ver "não disponível". Publicar agora?')) return;
+    persist({ ...state, visivelPublico: true });
+  }
+  const link = `${window.location.origin}${window.location.pathname}?t=${currentTournamentId}`;
+  document.getElementById('pin-modal-slot').innerHTML = renderQrModal(link);
+  document.querySelector('[data-action="close-pin-bg"]')?.addEventListener('click', closePinModal);
+  document.querySelector('[data-action="stop-bubble"]')?.addEventListener('click', (e) => e.stopPropagation());
+  document.querySelector('[data-action="close-pin"]')?.addEventListener('click', closePinModal);
+}
+// Exportação em PDF via impressão do navegador (Salvar como PDF) em vez de biblioteca externa —
+// sem dependência nova pra manter, funciona offline e o usuário já conhece o fluxo "imprimir".
+// Escreve num #print-area fixo (fora do #root) pra não mexer no ciclo normal de render/state.
+function renderAgendaImprimivel(catKey) {
+  const items = collectJogos(catKey).slice().sort((x, y) => {
+    const dx = x.data || '9999-99-99', dy = y.data || '9999-99-99';
+    if (dx !== dy) return dx < dy ? -1 : 1;
+    const hx = x.hora || '99:99', hy = y.hora || '99:99';
+    return hx < hy ? -1 : hx > hy ? 1 : 0;
+  });
+  const catTxt = catKey === DEFAULT_CAT ? '' : ` — ${catLabel(catKey)}`;
+  const linhas = items.map((it) => `
+    <tr>
+      <td>${esc(it.fase)}</td>
+      <td>${it.data ? formatData(it.data) : '—'}</td>
+      <td>${it.hora || '—'}</td>
+      <td>${esc(it.a)}</td>
+      <td>${esc(it.b)}</td>
+      <td>${it.scoreA != null && it.scoreB != null ? `${it.scoreA} x ${it.scoreB}` : '—'}</td>
+    </tr>`).join('');
+  return `
+    <h1>${esc(state.name)}${esc(catTxt)}</h1>
+    <div class="print-sub">Agenda e resultados — gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <table class="print-table">
+      <thead><tr><th>Fase</th><th>Data</th><th>Hora</th><th>Dupla A</th><th>Dupla B</th><th>Placar</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="6">Nenhum jogo gerado ainda.</td></tr>'}</tbody>
+    </table>`;
+}
+function exportarPdfHandler(catKey) {
+  const area = document.getElementById('print-area');
+  if (!area) return;
+  area.innerHTML = renderAgendaImprimivel(catKey);
+  window.print();
 }
 
 async function tryUnlock() {
