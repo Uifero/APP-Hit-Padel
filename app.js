@@ -67,6 +67,16 @@ function lerCacheTorneio(tid) {
     return raw ? JSON.parse(raw) : null;
   } catch (e) { return null; }
 }
+// Lembra o que a jogadora digitou em "🔍 Buscar por atleta" (por torneio, neste aparelho) — só
+// pra pré-preencher a busca e personalizar o banner "Próximo jogo" nas próximas visitas. Nunca é
+// usado pra decidir permissão de nada (ex: pagamento), só pra conveniência de exibição.
+function buscaLembradaKey(tid) { return `hitpadel_busca_${tid}`; }
+function lerBuscaLembrada(tid) {
+  try { return localStorage.getItem(buscaLembradaKey(tid)) || ''; } catch (e) { return ''; }
+}
+function lembrarBusca(tid, termo) {
+  try { localStorage.setItem(buscaLembradaKey(tid), termo); } catch (e) { /* localStorage indisponível: só perde a personalização */ }
+}
 let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
 let rodadasEstadoManual = {}; // chave "catKey-ri" -> true (recolhida) / false (aberta), fixado explicitamente ao clicar
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
@@ -101,6 +111,17 @@ function getUrlTournamentId() {
 function isModoTV() {
   return new URLSearchParams(window.location.search).get('tv') === '1';
 }
+function getUrlParam(nome) {
+  return new URLSearchParams(window.location.search).get(nome);
+}
+// Reflete categoria/aba selecionadas na URL (replaceState — não polui o histórico a cada clique de
+// aba) pra um link copiado da barra de endereço, ou um F5, cair no mesmo lugar de volta.
+function syncUrlEstadoView() {
+  const url = new URL(window.location.href);
+  if (selectedCategoria) url.searchParams.set('cat', selectedCategoria); else url.searchParams.delete('cat');
+  if (tab && tab !== 'rodadas') url.searchParams.set('tab', tab); else url.searchParams.delete('tab');
+  window.history.replaceState({}, '', url);
+}
 
 function selecionarTorneio(id) {
   currentTournamentId = id;
@@ -114,6 +135,7 @@ function selecionarTorneio(id) {
   pubComprovanteErroMsg = null;
   const url = new URL(window.location.href);
   if (id) url.searchParams.set('t', id); else url.searchParams.delete('t');
+  url.searchParams.delete('cat'); url.searchParams.delete('tab');
   window.history.pushState({}, '', url);
   carregarTorneioAtual();
   render();
@@ -260,9 +282,13 @@ function pixSalvarHandler() {
 }
 
 currentTournamentId = getUrlTournamentId();
+selectedCategoria = getUrlParam('cat') || null;
+tab = getUrlParam('tab') || 'rodadas';
 if (currentTournamentId) carregarTorneioAtual();
 window.addEventListener('popstate', () => {
   currentTournamentId = getUrlTournamentId();
+  selectedCategoria = getUrlParam('cat') || null;
+  tab = getUrlParam('tab') || 'rodadas';
   carregarTorneioAtual();
   render();
 });
@@ -338,6 +364,17 @@ function renderEstadoVazioPublico(catPlayers, catTeams, isChaves) {
   `;
 }
 function renderProximaPartidaPublica(catKey) {
+  const termoLembrado = currentTournamentId ? lerBuscaLembrada(currentTournamentId) : '';
+  const meuJogo = meuProximoJogo(catKey, termoLembrado);
+  if (meuJogo) {
+    return `
+      <div class="proxima-banner">
+        <div class="proxima-banner-label">🎾 Seu próximo jogo</div>
+        <div class="proxima-banner-info">${formatData(meuJogo.data)} às ${esc(meuJogo.hora)}</div>
+        <div class="proxima-banner-jogo">${esc(meuJogo.a)} <span class="vs-inline">×</span> ${esc(meuJogo.b)}</div>
+      </div>
+    `;
+  }
   const resumo = resumoVisaoGeral(catKey);
   if (!resumo.proxima && !resumo.ultimoResultado) return '';
   return `
@@ -805,9 +842,10 @@ function renderInscritosPublico(catKey) {
     </section>`;
 }
 function renderBuscaAtleta() {
+  const termoLembrado = !isAdmin && currentTournamentId ? lerBuscaLembrada(currentTournamentId) : '';
   return isAdmin
     ? `<div class="field search-field"><input id="busca-atleta" placeholder="🔍 Buscar por atleta ou dupla..." /></div>`
-    : `<div class="field search-field search-field-destaque"><label>🔍 Digite seu nome pra encontrar sua partida</label><input id="busca-atleta" placeholder="Seu nome ou o da sua dupla..." /></div>`;
+    : `<div class="field search-field search-field-destaque"><label>🔍 Digite seu nome pra encontrar sua partida</label><input id="busca-atleta" placeholder="Seu nome ou o da sua dupla..." value="${esc(termoLembrado)}" /></div>`;
 }
 function renderCategoriaTabs(catKeys, current) {
   return `<div class="tabs cat-tabs">
@@ -867,6 +905,21 @@ function resumoVisaoGeral(catKey) {
   jogadosComHorario.sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora));
   const atrasadas = items.filter((it) => !partidaJogada(it) && it.data && it.hora && (it.data < hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) < agoraMin)));
   return { total, jogados, pendentes, proxima: futuros[0] || null, ultimoResultado: jogadosComHorario[0] || null, atrasadas: atrasadas.length };
+}
+// Mesmo filtro de "próxima" do resumoVisaoGeral, mas restrito aos jogos que citam o termo buscado
+// (nome da jogadora/dupla) — usado pra personalizar o banner público assim que alguém já buscou o
+// próprio nome uma vez (busca fica lembrada neste aparelho, ver lerBuscaLembrada).
+function meuProximoJogo(catKey, termo) {
+  const t = (termo || '').trim().toLowerCase();
+  if (!t) return null;
+  const items = collectJogos(catKey).filter((it) => `${it.a} ${it.b}`.toLowerCase().includes(t));
+  if (!items.length) return null;
+  const hoje = hojeISO();
+  const agora = new Date();
+  const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+  const futuros = items.filter((it) => !partidaJogada(it) && it.data && it.hora && (it.data > hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) >= agoraMin)));
+  futuros.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
+  return futuros[0] || null;
 }
 function statusQuadrasAoVivo(catKey) {
   const items = collectJogos(catKey);
@@ -1015,16 +1068,21 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
         <div class="visaogeral-item"><div class="visaogeral-num">${resumo.pendentes}</div><div class="visaogeral-label">Pendentes</div></div>
       </div>
       ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
-      <button class="mode-btn" style="width:100%;margin-top:10px" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
-      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
-      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="mostrar-qr">🔗 Gerar QR Code do torneio</button>
-      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="exportar-pdf">🖨️ Exportar agenda/placar em PDF</button>
     </div>
   </section>
   <section class="card cta-card">
     <div class="card-body">
       <button class="btn-primary" style="width:100%" data-action="${state.tipo === 'chaves' ? 'gerar-grupos' : 'sortear'}">🔀 ${naoGerouAinda ? (state.tipo === 'chaves' ? 'Gerar chaves' : 'Sortear rodadas') : (state.tipo === 'chaves' ? 'Gerar chaves novamente' : 'Sortear novamente')}</button>
       <div class="hint" style="text-align:left;margin-top:6px">${naoGerouAinda ? `Cadastre as ${state.tipo === 'chaves' ? 'duplas' : 'jogadoras'} em "Inscrições" antes de sortear.` : 'Pode sortear quantas vezes quiser — cada vez gera uma combinação nova. Isso apaga os placares já lançados.'}</div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-head-static">📲 Compartilhar</div>
+    <div class="card-body">
+      <button class="mode-btn" style="width:100%" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="mostrar-qr">🔗 Gerar QR Code do torneio</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="exportar-pdf">🖨️ Exportar agenda/placar em PDF</button>
     </div>
   </section>
   <section class="card">
@@ -1442,6 +1500,17 @@ function renderScoreStepper(matchId, side, value, actionPrefix = 'score') {
     <button type="button" class="score-btn" data-action="${actionPrefix}-inc" data-match="${matchId}" data-side="${side}">+</button>
   </div>`;
 }
+// Mesma janela de "em andamento" do módulo Ao Vivo (statusQuadrasAoVivo: começou e ainda não faz 60min)
+// — repetida aqui pra marcar o próprio card na lista de Rodadas, sem precisar trocar de aba pra ver.
+function partidaAoVivoAgora(m, ag) {
+  if (partidaJogada(m) || !ag.data || !ag.hora) return false;
+  if (ag.data !== hojeISO()) return false;
+  const [h, mi] = ag.hora.split(':').map(Number);
+  const inicioMin = h * 60 + mi;
+  const agora = new Date();
+  const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+  return agoraMin >= inicioMin && agoraMin < inicioMin + 60;
+}
 function renderMatch(m, ri) {
   const d = drafts[m.id] || { a: m.scoreA ?? '', b: m.scoreB ?? '' };
   const done = partidaJogada(m);
@@ -1451,7 +1520,7 @@ function renderMatch(m, ri) {
   const selecionado = jogoSelecionadoParaTroca === m.id;
   return `
   <div class="match ${selecionado ? 'match-selecionado-troca' : ''}">
-    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${ag.data ? `<span class="jogo-hora">🕐 ${formatData(ag.data)} ${esc(ag.hora || '')}</span>` : ''}${done && !editing ? '<span class="check">✓</span>' : ''}</div>
+    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${partidaAoVivoAgora(m, ag) ? '<span class="tag-ao-vivo">🟢 ao vivo</span>' : ''}${ag.data ? `<span class="jogo-hora">🕐 ${formatData(ag.data)} ${esc(ag.hora || '')}</span>` : ''}${done && !editing ? '<span class="check">✓</span>' : ''}</div>
     <div class="team-row">
       <span class="team-name">${m.teamA.map(nameOf).map(esc).join(' + ')}</span>
       ${showInputs ? renderScoreStepper(m.id, 'a', d.a) : `<span class="score">${m.scoreA ?? '–'}</span>`}
@@ -1780,7 +1849,7 @@ function bindEvents() {
     if (action === 'toggle-notificacoes') el.addEventListener('click', toggleNotificacoesHandler);
     if (action === 'set-data-inicio') el.addEventListener('change', () => persist({ ...state, dataInicio: el.value }));
     if (action === 'set-data-fim') el.addEventListener('change', () => persist({ ...state, dataFim: el.value }));
-    if (action === 'sel-cat') el.addEventListener('click', () => { selectedCategoria = el.dataset.cat; tab = 'rodadas'; render(); });
+    if (action === 'sel-cat') el.addEventListener('click', () => { selectedCategoria = el.dataset.cat; tab = 'rodadas'; syncUrlEstadoView(); render(); });
     if (action === 'jogos-filtro-data') el.addEventListener('click', () => { jogosFiltroData = el.dataset.data; render(); });
     if (action === 'gerar-horarios') el.addEventListener('click', () => gerarHorariosHandler(el.dataset.cat));
     if (action === 'add-cat') el.addEventListener('click', addCategoriaHandler);
@@ -1857,7 +1926,7 @@ function bindEvents() {
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
     if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
-    if (action === 'tab') el.addEventListener('click', () => { tab = el.dataset.tab; render(); });
+    if (action === 'tab') el.addEventListener('click', () => { tab = el.dataset.tab; syncUrlEstadoView(); render(); });
     if (['score-a', 'score-b', 'gscore-a', 'gscore-b', 'bscore-a', 'bscore-b'].includes(action)) {
       el.addEventListener('input', () => {
         const id = el.dataset.match;
@@ -1904,8 +1973,7 @@ function bindEvents() {
     document.getElementById(id)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
   });
   const buscaInput = document.getElementById('busca-atleta');
-  if (buscaInput) buscaInput.addEventListener('input', () => {
-    const termo = buscaInput.value.trim().toLowerCase();
+  function aplicarFiltroBusca(termo) {
     document.querySelectorAll('.round-block').forEach((block) => {
       let algumVisivel = false;
       const naChave = new Set(block.querySelectorAll('.bracket-matches .match'));
@@ -1923,7 +1991,17 @@ function bindEvents() {
       });
       block.style.display = algumVisivel ? '' : 'none';
     });
-  });
+  }
+  if (buscaInput) {
+    aplicarFiltroBusca(buscaInput.value.trim().toLowerCase());
+    buscaInput.addEventListener('input', () => {
+      const termo = buscaInput.value.trim().toLowerCase();
+      // Guarda o termo pra próxima visita (só na visão pública — personaliza o banner "Seu próximo
+      // jogo"). Admin usa a mesma busca só como filtro de tela, sem intenção de "esse sou eu".
+      if (!isAdmin && currentTournamentId) lembrarBusca(currentTournamentId, termo);
+      aplicarFiltroBusca(termo);
+    });
+  }
   const newCatInput = document.getElementById('new-cat');
   if (newCatInput) newCatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCategoriaHandler(); });
   const lobbyBuscaInput = document.getElementById('lobby-busca');
