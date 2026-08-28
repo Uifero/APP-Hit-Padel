@@ -287,6 +287,56 @@ export function gerarRodadasComByesJustos(players, numCourts) {
     };
   });
 }
+// Pra cada jogadora, qual foi a maior sequência de rodadas jogadas sem nenhuma folga no meio — usado
+// pra avisar quando o objetivo de "no máximo N seguidas" não deu pra cumprir (sem quadra/folga
+// suficiente pra isso), mesmo depois do reordenarPorDescanso já ter feito o possível.
+export function maiorSequenciaSemFolga(rounds, playerIds) {
+  const streak = {}, pior = {};
+  playerIds.forEach((id) => { streak[id] = 0; pior[id] = 0; });
+  rounds.forEach((rd) => {
+    const folgando = new Set(rd.byes || []);
+    playerIds.forEach((id) => {
+      if (folgando.has(id)) { streak[id] = 0; }
+      else { streak[id]++; if (streak[id] > pior[id]) pior[id] = streak[id]; }
+    });
+  });
+  let maxSequencia = 0;
+  Object.values(pior).forEach((v) => { if (v > maxSequencia) maxSequencia = v; });
+  const jogadorasNoLimite = maxSequencia > 0 ? playerIds.filter((id) => pior[id] === maxSequencia) : [];
+  return { maxSequencia, jogadorasNoLimite };
+}
+// Reordena as rodadas já geradas (sem mexer em quem joga com quem, nem em quem folga em cada uma —
+// isso já foi decidido) só pra espalhar melhor as folgas de cada jogadora ao longo do campeonato,
+// evitando que alguém jogue mais de `maxSeguidos` rodadas seguidas sem folga nenhuma. É um ajuste
+// best-effort (heurística gulosa: a cada passo escolhe, entre as rodadas ainda não posicionadas, a
+// que mais alivia quem já está no limite) — não é uma garantia matemática, porque com poucas quadras
+// (poucas folgas por rodada) pode simplesmente não existir uma ordem que satisfaça todo mundo. Não
+// muda a contagem total de folgas de ninguém, só ONDE elas caem na sequência.
+export function reordenarPorDescanso(rounds, playerIds, maxSeguidos = 4) {
+  if (rounds.length <= 1) return rounds;
+  const restantes = [...rounds];
+  const streak = {};
+  playerIds.forEach((id) => { streak[id] = 0; });
+  const ordenadas = [];
+  while (restantes.length) {
+    let melhorIdx = 0, melhorScore = -Infinity;
+    restantes.forEach((rd, idx) => {
+      const folgando = new Set(rd.byes || []);
+      let overflow = 0, alivio = 0;
+      playerIds.forEach((id) => {
+        if (folgando.has(id)) alivio += streak[id];
+        else if (streak[id] >= maxSeguidos) overflow++;
+      });
+      const score = alivio - overflow * 1000;
+      if (score > melhorScore) { melhorScore = score; melhorIdx = idx; }
+    });
+    const escolhida = restantes.splice(melhorIdx, 1)[0];
+    const folgando = new Set(escolhida.byes || []);
+    playerIds.forEach((id) => { streak[id] = folgando.has(id) ? 0 : streak[id] + 1; });
+    ordenadas.push(escolhida);
+  }
+  return ordenadas.map((rd, i) => ({ ...rd, round: i + 1 }));
+}
 export function generateSchedule(players, numCourts, numRounds) {
   const history = { partner: {}, opponent: {} };
   const n = players.length;
@@ -360,7 +410,7 @@ export function generateSchedule(players, numCourts, numRounds) {
     });
     rounds.push({ round: r + 1, byes: byeIds, matches: bestGroups.map((g, idx) => ({ id: uid(), court: idx + 1, teamA: g.teamA, teamB: g.teamB, scoreA: null, scoreB: null })) });
   }
-  return rounds;
+  return reordenarPorDescanso(rounds, players.map((p) => p.id));
 }
 
 // ---------- agenda automática de horários (com pausa opcional) ----------

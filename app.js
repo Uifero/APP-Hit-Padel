@@ -10,7 +10,7 @@ import {
   proximosRoundsValidos, proximoRoundsValidoApartirDe, roundsWithoutScores, generateFinalRound,
   shuffleArr, generateGroups, computeGroupStandings, nextPow2, roundName, seedOrder,
   repairSameGroupClashes, propagateWinner, generateEliminationFromGroups, allGroupMatchesScored,
-  horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
+  horaParaMinutos, minutosParaHora, ajustarCursorParaPausa, maiorSequenciaSemFolga,
 } from './scheduling.js';
 
 
@@ -871,6 +871,22 @@ function renderGerarHorariosPanel(catKey) {
       </div>
     </div>`;
 }
+// Aviso pós-sorteio (não bloqueia nada): quando não dá pra manter no máximo LIMITE_DESCANSO jogos
+// seguidos sem folga pra todo mundo — mesmo depois do reordenarPorDescanso (scheduling.js) já ter
+// tentado espalhar as folgas ao máximo — avisa quem ficou no limite e sugere a troca manual de
+// rodada que já existe (🔁 Trocar essa rodada com outra) pra quem quiser tentar ajustar na mão.
+const LIMITE_DESCANSO = 4;
+function renderAvisoDescanso(catRounds, catPlayers) {
+  if (!isAdmin) return '';
+  const rodadasNormais = catRounds.filter((r) => !r.isFinal);
+  if (rodadasNormais.length <= LIMITE_DESCANSO) return '';
+  const { maxSequencia, jogadorasNoLimite } = maiorSequenciaSemFolga(rodadasNormais, catPlayers.map((p) => p.id));
+  if (maxSequencia <= LIMITE_DESCANSO) return '';
+  const nomes = jogadorasNoLimite.slice(0, 3).map(nameOf).map(esc).join(', ');
+  const resto = jogadorasNoLimite.length > 3 ? ` e mais ${jogadorasNoLimite.length - 3}` : '';
+  const verbo = jogadorasNoLimite.length > 1 ? 'vão jogar' : 'vai jogar';
+  return `<div class="hint hint-alerta" style="text-align:left;margin-bottom:10px">⚠ ${nomes}${resto} ${verbo} ${maxSequencia} rodadas seguidas sem folga — já tentamos espalhar as folgas ao máximo, mas com ${state.numCourts} quadra(s) e essa quantidade de jogadoras não dá pra descer de ${maxSequencia}. Se quiser tentar melhorar na mão, use "🔁 Trocar essa rodada com outra" na lista abaixo.</div>`;
+}
 function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
   if (!catRounds.length) return '';
   const podeGerarFinal = state.tipo === 'mini' && !catRounds.some((r) => r.isFinal) && catRounds.length > 0 && !roundsWithoutScores(catRounds) && catPlayers.length >= 4;
@@ -881,7 +897,7 @@ function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
       <button class="tab ${tab === 'aovivo' ? 'active' : ''}" data-action="tab" data-tab="aovivo">Ao Vivo</button>
     </div>
     ${isAdmin && podeGerarFinal ? `<button class="btn-primary" style="margin-bottom:14px" data-action="gerar-final">🏆 Gerar final (top 4)</button>` : ''}
-    ${tab === 'rodadas' ? renderGerarHorariosPanel(catKey) + renderRounds(catRounds, catKey) : ''}
+    ${tab === 'rodadas' ? renderAvisoDescanso(catRounds, catPlayers) + renderGerarHorariosPanel(catKey) + renderRounds(catRounds, catKey) : ''}
     ${tab === 'ranking' ? renderRanking(stats) : ''}
     ${tab === 'aovivo' ? renderAoVivoModulo(catKey) : ''}
   `;

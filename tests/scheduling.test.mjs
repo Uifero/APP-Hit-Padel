@@ -9,6 +9,7 @@ import {
   computeGroupStandings, nextPow2, roundName, seedOrder, repairSameGroupClashes,
   generateEliminationFromGroups, allGroupMatchesScored,
   horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
+  reordenarPorDescanso, maiorSequenciaSemFolga,
 } from '../scheduling.js';
 
 const players = (n) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: `Jogadora ${i + 1}` }));
@@ -372,5 +373,44 @@ describe('ajustarCursorParaPausa', () => {
   });
   it('horário depois do fim da pausa passa direto', () => {
     assert.equal(ajustarCursorParaPausa(800, 720, 780), 800);
+  });
+});
+
+describe('maiorSequenciaSemFolga / reordenarPorDescanso', () => {
+  const ids = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
+  const rondasFolgaNoFim = [
+    { round: 1, byes: [], matches: [] },
+    { round: 2, byes: [], matches: [] },
+    { round: 3, byes: [], matches: [] },
+    { round: 4, byes: [], matches: [] },
+    { round: 5, byes: ['p1', 'p2', 'p3'], matches: [] },
+    { round: 6, byes: ['p4', 'p5', 'p6'], matches: [] },
+  ];
+  const contarFolgas = (rounds) => {
+    const c = {}; ids.forEach((id) => { c[id] = 0; });
+    rounds.forEach((rd) => rd.byes.forEach((id) => { c[id]++; }));
+    return c;
+  };
+
+  it('acha a pior sequência (jogos seguidos sem folga) e quem está nela', () => {
+    const { maxSequencia, jogadorasNoLimite } = maiorSequenciaSemFolga(rondasFolgaNoFim, ids);
+    assert.equal(maxSequencia, 5); // p4/p5/p6 jogam as rodadas 1-5 seguidas antes de folgar só na 6
+    assert.deepEqual([...jogadorasNoLimite].sort(), ['p4', 'p5', 'p6']);
+  });
+
+  it('reordenarPorDescanso nunca piora a pior sequência e preserva a quantidade de folgas de cada jogadora', () => {
+    const antes = maiorSequenciaSemFolga(rondasFolgaNoFim, ids).maxSequencia;
+    const reordenadas = reordenarPorDescanso(rondasFolgaNoFim, ids);
+    const depois = maiorSequenciaSemFolga(reordenadas, ids).maxSequencia;
+    assert.ok(depois <= antes, `pior sequência não deveria piorar: antes=${antes}, depois=${depois}`);
+    assert.deepEqual(contarFolgas(reordenadas), contarFolgas(rondasFolgaNoFim));
+    assert.deepEqual(reordenadas.map((r) => r.round), [1, 2, 3, 4, 5, 6]); // renumerado em sequência
+  });
+
+  it('sem folga nenhuma, reordenar não inventa folga que não existe', () => {
+    const semFolga = Array.from({ length: 7 }, (_, i) => ({ round: i + 1, byes: [], matches: [] }));
+    assert.equal(maiorSequenciaSemFolga(semFolga, ids).maxSequencia, 7);
+    const reordenadas = reordenarPorDescanso(semFolga, ids);
+    assert.equal(maiorSequenciaSemFolga(reordenadas, ids).maxSequencia, 7);
   });
 });
