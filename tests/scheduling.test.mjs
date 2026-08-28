@@ -8,6 +8,7 @@ import {
   distribuicaoEhJusta, proximosRoundsValidos, proximoRoundsValidoApartirDe, generateGroups,
   computeGroupStandings, nextPow2, roundName, seedOrder, repairSameGroupClashes,
   generateEliminationFromGroups, allGroupMatchesScored,
+  horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
 } from '../scheduling.js';
 
 const players = (n) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: `Jogadora ${i + 1}` }));
@@ -339,5 +340,37 @@ describe('generateEliminationFromGroups', () => {
     bracket[0].forEach((m) => assert.equal(m.isBye, false));
     const todos = bracket[0].flatMap((m) => [m.teamA, m.teamB]);
     assert.equal(new Set(todos).size, 4);
+  });
+});
+
+describe('horaParaMinutos / minutosParaHora', () => {
+  it('convertem "HH:MM" <-> minutos desde meia-noite', () => {
+    assert.equal(horaParaMinutos('09:30'), 570);
+    assert.equal(minutosParaHora(570), '09:30');
+    assert.equal(minutosParaHora(0), '00:00');
+  });
+  it('minutosParaHora dá a volta depois da meia-noite (mesmo comportamento de antes)', () => {
+    assert.equal(minutosParaHora(1440), '00:00');
+    assert.equal(minutosParaHora(1500), '01:00');
+  });
+});
+
+describe('ajustarCursorParaPausa', () => {
+  it('sem pausa configurada, não mexe no horário', () => {
+    assert.equal(ajustarCursorParaPausa(600, null, null), 600);
+  });
+  it('pausa inválida (fim <= início) é ignorada', () => {
+    assert.equal(ajustarCursorParaPausa(600, 720, 720), 600);
+    assert.equal(ajustarCursorParaPausa(600, 720, 700), 600);
+  });
+  it('horário antes da pausa passa direto', () => {
+    assert.equal(ajustarCursorParaPausa(600, 720, 780), 600); // 10:00, pausa 12:00-13:00
+  });
+  it('horário dentro da janela de pausa pula pro fim da pausa', () => {
+    assert.equal(ajustarCursorParaPausa(720, 720, 780), 780);  // exatamente no início
+    assert.equal(ajustarCursorParaPausa(750, 720, 780), 780);  // no meio
+  });
+  it('horário depois do fim da pausa passa direto', () => {
+    assert.equal(ajustarCursorParaPausa(800, 720, 780), 800);
   });
 });

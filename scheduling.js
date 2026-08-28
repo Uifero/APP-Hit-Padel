@@ -38,6 +38,8 @@ export function defaultState() {
     nomesQuadras: ['Quadra 01', 'Quadra 02'],
     horaInicioTorneio: '',
     duracaoJogoMin: 40,
+    pausaInicio: '',    // horário em que os jogos param (ex: almoço) — vazio = sem pausa
+    pausaFim: '',        // horário em que os jogos retomam depois da pausa
     encerrado: false,
     agendamentos: {},   // { [matchId]: { data, hora } }
     valorInscricao: 0,  // R$ — 0/vazio = torneio gratuito. No tipo 'chaves' é sempre por dupla; nos demais, por atleta.
@@ -359,6 +361,25 @@ export function generateSchedule(players, numCourts, numRounds) {
     rounds.push({ round: r + 1, byes: byeIds, matches: bestGroups.map((g, idx) => ({ id: uid(), court: idx + 1, teamA: g.teamA, teamB: g.teamB, scoreA: null, scoreB: null })) });
   }
   return rounds;
+}
+
+// ---------- agenda automática de horários (com pausa opcional) ----------
+export function horaParaMinutos(hora) {
+  const [h, m] = hora.split(':').map(Number);
+  return h * 60 + m;
+}
+export function minutosParaHora(min) {
+  const h = Math.floor(min / 60) % 24;
+  const m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+// Se o horário calculado cair dentro da janela de pausa configurada (ex: almoço), empurra pro
+// horário de volta — assim os jogos seguintes retomam só depois do intervalo, sem precisar reajustar
+// cada horário manualmente. pausaFim <= pausaInicio (ou qualquer um deles ausente) desativa a pausa.
+export function ajustarCursorParaPausa(cursorMin, pausaInicioMin, pausaFimMin) {
+  if (pausaInicioMin == null || pausaFimMin == null || pausaFimMin <= pausaInicioMin) return cursorMin;
+  if (cursorMin >= pausaInicioMin && cursorMin < pausaFimMin) return pausaFimMin;
+  return cursorMin;
 }
 
 // Desempate Americano: pontos (sets) -> vitórias -> confronto direto

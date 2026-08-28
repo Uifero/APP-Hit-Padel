@@ -10,6 +10,7 @@ import {
   proximosRoundsValidos, proximoRoundsValidoApartirDe, roundsWithoutScores, generateFinalRound,
   shuffleArr, generateGroups, computeGroupStandings, nextPow2, roundName, seedOrder,
   repairSameGroupClashes, propagateWinner, generateEliminationFromGroups, allGroupMatchesScored,
+  horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
 } from './scheduling.js';
 
 
@@ -1200,6 +1201,11 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
       <div class="field"><label>Duração de cada jogo (min)</label><input type="number" min="1" id="duracao-jogo-min" value="${state.duracaoJogoMin}" data-action="set-duracao-jogo-min" /></div>
     </div>
     <div class="hint" style="text-align:left">Preenchidos junto com a Data de início (na Configuração), os horários de todos os jogos são gerados automaticamente assim que você sortear as rodadas ou gerar as chaves — sem precisar entrar na aba Jogos depois.</div>
+    <div class="row2">
+      <div class="field"><label>Início da pausa (opcional)</label><input type="time" id="pausa-inicio" value="${esc(state.pausaInicio || '')}" data-action="set-pausa-inicio" /></div>
+      <div class="field"><label>Volta dos jogos após a pausa</label><input type="time" id="pausa-fim" value="${esc(state.pausaFim || '')}" data-action="set-pausa-fim" /></div>
+    </div>
+    <div class="hint" style="text-align:left">Se algum jogo cair dentro desse intervalo (ex: almoço, troca de turno), ele e os jogos seguintes são empurrados pra começar só a partir da hora de volta.</div>
   `;
 }
 
@@ -1821,6 +1827,8 @@ function bindEvents() {
     });
     if (action === 'set-hora-inicio-torneio') el.addEventListener('change', () => persist({ ...state, horaInicioTorneio: el.value }));
     if (action === 'set-duracao-jogo-min') el.addEventListener('change', () => persist({ ...state, duracaoJogoMin: Math.max(1, Number(el.value) || 40) }));
+    if (action === 'set-pausa-inicio') el.addEventListener('change', () => persist({ ...state, pausaInicio: el.value }));
+    if (action === 'set-pausa-fim') el.addEventListener('change', () => persist({ ...state, pausaFim: el.value }));
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
     if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
@@ -2253,28 +2261,32 @@ function pubDeclararPagoHandler(list, id) {
   const key = list === 'players' ? 'players' : 'teams';
   persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, statusPagamento: 'aguardando_confirmacao' } : x) });
 }
-function agendamentosAutoParaRounds(roundsPorCategoria, dataInput, horaInput, duracao, agendamentosBase) {
+function agendamentosAutoParaRounds(roundsPorCategoria, dataInput, horaInput, duracao, agendamentosBase, pausaInicio, pausaFim) {
   const agendamentos = { ...agendamentosBase };
+  const pausaInicioMin = pausaInicio ? horaParaMinutos(pausaInicio) : null;
+  const pausaFimMin = pausaFim ? horaParaMinutos(pausaFim) : null;
   Object.values(roundsPorCategoria).forEach((catRounds) => {
-    const [h, m] = horaInput.split(':').map(Number);
-    let cursorMin = h * 60 + m;
+    let cursorMin = horaParaMinutos(horaInput);
     catRounds.forEach((rd) => {
-      const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+      cursorMin = ajustarCursorParaPausa(cursorMin, pausaInicioMin, pausaFimMin);
+      const horaStr = minutosParaHora(cursorMin);
       rd.matches.forEach((m2) => { agendamentos[m2.id] = { data: dataInput, hora: horaStr }; });
       cursorMin += duracao;
     });
   });
   return agendamentos;
 }
-function agendamentosAutoParaGrupos(novosGrupos, dataInput, horaInput, duracao, agendamentosBase) {
+function agendamentosAutoParaGrupos(novosGrupos, dataInput, horaInput, duracao, agendamentosBase, pausaInicio, pausaFim) {
   const agendamentos = { ...agendamentosBase };
+  const pausaInicioMin = pausaInicio ? horaParaMinutos(pausaInicio) : null;
+  const pausaFimMin = pausaFim ? horaParaMinutos(pausaFim) : null;
   const porCategoria = {};
   novosGrupos.forEach((g) => { (porCategoria[g.categoria] ||= []).push(g); });
   Object.values(porCategoria).forEach((grupos) => {
-    const [h, m] = horaInput.split(':').map(Number);
-    let cursorMin = h * 60 + m;
+    let cursorMin = horaParaMinutos(horaInput);
     grupos.forEach((g) => {
-      const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+      cursorMin = ajustarCursorParaPausa(cursorMin, pausaInicioMin, pausaFimMin);
+      const horaStr = minutosParaHora(cursorMin);
       g.matches.forEach((m2) => { agendamentos[m2.id] = { data: dataInput, hora: horaStr }; });
       cursorMin += duracao;
     });
@@ -2311,7 +2323,7 @@ function sortearHandler() {
   if (temDadosAntes && !confirm('Isso vai gerar um novo sorteio e apagar os placares atuais. Continuar?')) return;
   const novoState = { ...state, rounds: newRounds };
   if (state.dataInicio && state.horaInicioTorneio) {
-    novoState.agendamentos = agendamentosAutoParaRounds(newRounds, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos);
+    novoState.agendamentos = agendamentosAutoParaRounds(newRounds, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos, state.pausaInicio, state.pausaFim);
   }
   persist(novoState);
   tab = 'rodadas';
@@ -2328,7 +2340,7 @@ function gerarGruposHandler() {
   if (!novosGrupos.length) return;
   const novoState = { ...state, grupos: novosGrupos, eliminatorias: {} };
   if (state.dataInicio && state.horaInicioTorneio) {
-    novoState.agendamentos = agendamentosAutoParaGrupos(novosGrupos, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos);
+    novoState.agendamentos = agendamentosAutoParaGrupos(novosGrupos, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos, state.pausaInicio, state.pausaFim);
   }
   persist(novoState);
 }
@@ -2345,11 +2357,13 @@ function gerarHorariosHandler(catKey) {
     if (!byFase[chave]) { byFase[chave] = []; faseOrder.push(chave); }
     byFase[chave].push(it);
   });
-  const [h, m] = horaInput.split(':').map(Number);
-  let cursorMin = h * 60 + m;
+  const pausaInicioMin = state.pausaInicio ? horaParaMinutos(state.pausaInicio) : null;
+  const pausaFimMin = state.pausaFim ? horaParaMinutos(state.pausaFim) : null;
+  let cursorMin = horaParaMinutos(horaInput);
   const agendamentos = { ...state.agendamentos };
   faseOrder.forEach((fase) => {
-    const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+    cursorMin = ajustarCursorParaPausa(cursorMin, pausaInicioMin, pausaFimMin);
+    const horaStr = minutosParaHora(cursorMin);
     byFase[fase].forEach((it) => { agendamentos[it.id] = { data: dataInput, hora: horaStr }; });
     cursorMin += duracao;
   });
