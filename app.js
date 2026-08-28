@@ -1239,19 +1239,43 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
     ? rodadasExatasGarantidas(numJogadoras, cortesReais)
     : (state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 && !numeroImpar ? proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds) : null);
   const justa = state.tipo !== 'chaves' && numJogadoras >= 4 ? distribuicaoRodadasEhJusta(numJogadoras, cortesReais, state.numRounds) : true;
+  const mostrarAvisosDuplas = state.tipo !== 'chaves' && numJogadoras >= 4;
+  const totalDuplas = numJogadoras * (numJogadoras - 1) / 2;
+  // Parâmetro 2 (todos jogam de dupla com todos / nunca repetir dupla), sempre avaliado contra o
+  // state.numRounds ATUAL — pra múltiplo de 4 o teto é exato e garantido (mesma rodadasExatas de
+  // cima: abaixo dela ninguém repetiu ainda mas também não fechou cobertura total; acima dela,
+  // repetição já é matematicamente inevitável). Pros demais tamanhos só existe uma estimativa
+  // (mínimo pra cobrir todo mundo), porque esses caem no sorteio heurístico, que minimiza repetição
+  // mas não garante zero — por isso o texto nunca promete "exatamente" fora do caso múltiplo de 4.
+  let coberturaOk = null, coberturaMsg = '';
+  if (mostrarAvisosDuplas) {
+    if (numeroImpar) {
+      coberturaOk = false;
+      coberturaMsg = 'Com número ímpar de jogadoras, não dá pra garantir que todas joguem de dupla com todas sem exigir rodadas demais. Use "jogos por jogadora" abaixo pra achar o melhor equilíbrio.';
+    } else if (multiploDe4 && rodadasExatas != null) {
+      if (state.numRounds < rodadasExatas) { coberturaOk = false; coberturaMsg = `Com ${state.numRounds} rodada(s), ainda faltam ${rodadasExatas - state.numRounds} rodada(s) pra todas jogarem de dupla com todas (o número exato é ${rodadasExatas}).`; }
+      else if (state.numRounds === rodadasExatas) { coberturaOk = true; coberturaMsg = `Com ${state.numRounds} rodada(s), todas jogam de dupla com todas exatamente 1 vez — nenhuma dupla se repete.`; }
+      else { coberturaOk = false; coberturaMsg = `Com ${state.numRounds} rodada(s), a partir da rodada ${rodadasExatas + 1} as duplas começam a se repetir (o máximo sem repetir nenhuma é ${rodadasExatas}).`; }
+    } else if (minRounds > 0) {
+      coberturaOk = state.numRounds >= minRounds;
+      coberturaMsg = coberturaOk
+        ? `Com ${state.numRounds} rodada(s), todas já devem ter jogado de dupla com quase todas (estimativa — esse total de jogadoras não tem um número exato garantido contra repetição, só o sorteio tentando ao máximo evitar).`
+        : `Com ${state.numRounds} rodada(s), ainda não dá pra todas jogarem de dupla com todas pelo menos 1 vez — são necessárias pelo menos ${minRounds} rodadas (estimativa).`;
+    }
+  }
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
       <div class="field"><label>Rodadas</label><input type="number" min="1" max="60" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
     </div>
+    ${mostrarAvisosDuplas ? `<div class="hint" style="text-align:left;margin-top:-8px">Com ${numJogadoras} jogadoras, existem ${totalDuplas} duplas diferentes possíveis.</div>` : ''}
     ${state.tipo !== 'chaves' && numJogadoras >= 4 ? `
-      <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:-8px;margin-bottom:10px">
+      <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:4px;margin-bottom:4px">
         ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas.${numeroImpar ? ' Com número ímpar de jogadoras, use o campo "jogos por jogadora" abaixo, que calcula um número de rodadas que funciona automaticamente.' : ` Números que funcionam: ${proximasRodadasJustasReais(numJogadoras, cortesReais).join(', ')}.`}`}
       </div>
     ` : ''}
-    ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 ? (numeroImpar ? `
-      <div class="hint" style="text-align:left;margin-top:4px">Com número ímpar de jogadoras, "todos contra todos" não é uma opção prática (exigiria rodadas demais). Use o campo "jogos por jogadora" abaixo.</div>
-    ` : (() => {
+    ${coberturaMsg ? `<div class="hint ${coberturaOk === false ? 'hint-alerta' : ''}" style="text-align:left;margin-bottom:10px">${coberturaOk === false ? '⚠' : coberturaOk === true ? '✓' : 'ℹ'} ${coberturaMsg}</div>` : ''}
+    ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 && !numeroImpar ? (() => {
       const precisouAjustar = rodadasExatas > minRounds;
       const rotulo = multiploDe4 ? 'todos jogam com todos exatamente 1 vez, jogos iguais pra todas' : 'todos jogam com todos, jogos iguais pra todas';
       const explicacao = multiploDe4
@@ -1260,7 +1284,7 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
       return `
       <button class="mode-btn" data-action="usar-cobertura-total" data-min="${rodadasExatas}">Preencher com ${rodadasExatas} rodadas (${rotulo})</button>
       <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), ${explicacao}.</div>
-    `; })()) : ''}
+    `; })() : ''}
     ${state.tipo !== 'chaves' ? `
       <div class="field" style="margin-top:10px">
         <label>Ou escolha quantos jogos cada jogadora deve jogar</label>
