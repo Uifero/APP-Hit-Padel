@@ -337,6 +337,17 @@ export function reordenarPorDescanso(rounds, playerIds, maxSeguidos = 4) {
   }
   return ordenadas.map((rd, i) => ({ ...rd, round: i + 1 }));
 }
+// Rodada "sobra" (menos jogos que as demais, sobrando quadra ociosa — artefato do casamento de
+// sobras em gerarRodadasComByesJustos, quando fica uma sobra sem par pra combinar) fica estranha se
+// cair no meio do campeonato. Joga ela(s) pro final da sequência, sem mexer na ordem das demais.
+export function moverRodadasMenoresPraFim(rounds) {
+  if (rounds.length <= 1) return rounds;
+  const maxJogos = Math.max(...rounds.map((r) => r.matches.length));
+  const cheias = rounds.filter((r) => r.matches.length === maxJogos);
+  const menores = rounds.filter((r) => r.matches.length < maxJogos);
+  if (!menores.length) return rounds;
+  return [...cheias, ...menores].map((rd, i) => ({ ...rd, round: i + 1 }));
+}
 export function generateSchedule(players, numCourts, numRounds) {
   const history = { partner: {}, opponent: {} };
   const n = players.length;
@@ -410,7 +421,7 @@ export function generateSchedule(players, numCourts, numRounds) {
     });
     rounds.push({ round: r + 1, byes: byeIds, matches: bestGroups.map((g, idx) => ({ id: uid(), court: idx + 1, teamA: g.teamA, teamB: g.teamB, scoreA: null, scoreB: null })) });
   }
-  return reordenarPorDescanso(rounds, players.map((p) => p.id));
+  return moverRodadasMenoresPraFim(reordenarPorDescanso(rounds, players.map((p) => p.id)));
 }
 
 // ---------- agenda automática de horários (com pausa opcional) ----------

@@ -9,7 +9,7 @@ import {
   computeGroupStandings, nextPow2, roundName, seedOrder, repairSameGroupClashes,
   generateEliminationFromGroups, allGroupMatchesScored,
   horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
-  reordenarPorDescanso, maiorSequenciaSemFolga,
+  reordenarPorDescanso, maiorSequenciaSemFolga, moverRodadasMenoresPraFim,
 } from '../scheduling.js';
 
 const players = (n) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: `Jogadora ${i + 1}` }));
@@ -412,5 +412,31 @@ describe('maiorSequenciaSemFolga / reordenarPorDescanso', () => {
     assert.equal(maiorSequenciaSemFolga(semFolga, ids).maxSequencia, 7);
     const reordenadas = reordenarPorDescanso(semFolga, ids);
     assert.equal(maiorSequenciaSemFolga(reordenadas, ids).maxSequencia, 7);
+  });
+});
+
+describe('moverRodadasMenoresPraFim', () => {
+  it('joga a rodada com menos jogos que as demais (quadra ociosa) pro final da sequência', () => {
+    const rounds = [
+      { round: 1, byes: ['a'], matches: [{ id: 'm1' }, { id: 'm2' }] },
+      { round: 2, byes: ['b', 'c', 'd', 'e'], matches: [{ id: 'm3' }] }, // sobra: só 1 jogo
+      { round: 3, byes: ['f'], matches: [{ id: 'm4' }, { id: 'm5' }] },
+    ];
+    const resultado = moverRodadasMenoresPraFim(rounds);
+    assert.deepEqual(resultado.map((r) => r.matches.length), [2, 2, 1]);
+    assert.deepEqual(resultado.map((r) => r.round), [1, 2, 3]); // renumerada em sequência
+  });
+  it('sem nenhuma rodada menor, não muda nada', () => {
+    const rounds = [
+      { round: 1, byes: [], matches: [{ id: 'm1' }] },
+      { round: 2, byes: [], matches: [{ id: 'm2' }] },
+    ];
+    assert.deepEqual(moverRodadasMenoresPraFim(rounds), rounds);
+  });
+  it('generateSchedule (12 jogadoras / 2 quadras, cenário real de sobra) deixa a rodada menor por último', () => {
+    const rounds = generateSchedule(players(12), 2, 17);
+    const tamanhos = rounds.map((r) => r.matches.length);
+    const maxJogos = Math.max(...tamanhos);
+    tamanhos.slice(0, -1).forEach((t) => assert.equal(t, maxJogos, 'só a última rodada pode ter menos jogos que as demais'));
   });
 });
