@@ -12,6 +12,10 @@
       ".read": true,
       ".write": true
     },
+    "reservas": {
+      ".read": true,
+      ".write": true
+    },
     "comprovantes": {
       ".read": "auth != null",
       ".write": true
