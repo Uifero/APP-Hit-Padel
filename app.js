@@ -98,17 +98,21 @@ let pubComprovanteEnviando = false; // true enquanto o comprovante está subindo
 let pubComprovanteErroMsg = null; // erro do envio do comprovante
 
 // ---------- Reserva de quadra (agenda avulsa, independente de torneio) ----------
-// Grade fixa de horários do dia — 1h30 por reserva. O de 21:30 começa só 30min depois do anterior,
-// pra aproveitar até o fechamento, mas a reserva em si dura 1h30 do mesmo jeito (termina 23:00).
-// Ajuste esta lista pra mudar a grade — nada é recalculado na mão em nenhum outro lugar.
-const HORARIOS_RESERVA = ['09:00', '10:30', '12:00', '13:30', '15:00', '16:30', '18:00', '19:30', '21:00', '21:30'];
+// Cada reserva dura 1h30 (o fim é sempre início + 1h30). As listas de horários abaixo são só os
+// PADRÕES de fábrica: o admin edita a grade de dia de semana e a de fim de semana em "Reservar
+// Quadra" (config/reservaConfig), e ainda pode dar uma lista própria pra cada quadra — ex.: no
+// fim de semana uma quadra abre 13:30 e as outras 14:00 (config/quadrasReserva[].horarios*).
+const HORARIOS_RESERVA_SEMANA_PADRAO = ['09:00', '10:30', '12:00', '14:00', '15:30', '17:00', '18:30', '20:00', '21:30'];
+const HORARIOS_RESERVA_FDS_PADRAO = ['09:00', '10:30', '12:00', '13:30', '15:00', '16:30', '18:00', '19:30', '21:00'];
 const DURACAO_RESERVA_MIN = 90;
 const DIAS_ANTECEDENCIA_RESERVA = 7; // mostra/permite de hoje até +7 dias
 let reservasView = false;
-let quadrasReserva = null;   // null = carregando | [{ id, nome }] (config/quadrasReserva)
+let quadrasReserva = null;   // null = carregando | [{ id, nome, horariosSemana?, horariosFimDeSemana? }] (config/quadrasReserva)
 let reservasData = null;     // null = carregando | { [data]: { [quadraId]: { [horario]: reserva } } }
+let reservaConfig = {};      // config/reservaConfig — { horariosSemana:[], horariosFimDeSemana:[] } (padrões editáveis pelo admin)
 let unsubQuadrasReserva = null;
 let unsubReservas = null;
+let unsubReservaConfig = null;
 let selectedReservaData = null;   // 'YYYY-MM-DD'
 let reservaModal = null;          // { modo:'novo'|'pagamento'|'editar', data, quadraId, horario, id? }
 let reservaFlash = null;          // mensagem de sucesso curta (admin)
@@ -1837,6 +1841,8 @@ function bindEvents() {
     if (action === 'reserva-copiar-pix') el.addEventListener('click', () => copiarPixHandler(el.dataset.texto));
     if (action === 'reserva-add-quadra') el.addEventListener('click', addQuadraReservaHandler);
     if (action === 'reserva-set-quadra-nome') el.addEventListener('change', () => renomearQuadraReservaHandler(el.dataset.id, el.value));
+    if (action === 'reserva-salvar-horarios-padrao') el.addEventListener('click', salvarHorariosPadraoReservaHandler);
+    if (action === 'reserva-salvar-horarios-quadra') el.addEventListener('click', () => salvarHorariosQuadraReservaHandler(el.dataset.id));
     if (action === 'reserva-remove-quadra') el.addEventListener('click', () => removerQuadraReservaHandler(el.dataset.id, el.dataset.nome));
     if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
     if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
@@ -2800,6 +2806,12 @@ function entrarReservas() {
       render();
     });
   }
+  if (!unsubReservaConfig) {
+    unsubReservaConfig = onValue(ref(db, 'config/reservaConfig'), (snap) => {
+      reservaConfig = snap.val() || {};
+      render();
+    }, (err) => { console.error('Falha ao ler config de reservas', err); render(); });
+  }
   render();
 }
 function sairReservas() {
@@ -2808,8 +2820,10 @@ function sairReservas() {
   reservaFlash = null;
   if (unsubQuadrasReserva) { unsubQuadrasReserva(); unsubQuadrasReserva = null; }
   if (unsubReservas) { unsubReservas(); unsubReservas = null; }
+  if (unsubReservaConfig) { unsubReservaConfig(); unsubReservaConfig = null; }
   quadrasReserva = null;
   reservasData = null;
+  reservaConfig = {};
 }
 function abrirReservasHandler() {
   const url = new URL(window.location.href);
@@ -2844,6 +2858,52 @@ function rotuloDataReserva(iso) {
 }
 function fimHorarioReserva(horario) {
   return minutosParaHora(horaParaMinutos(horario) + DURACAO_RESERVA_MIN);
+}
+function ehFimDeSemana(iso) {
+  const g = new Date(iso + 'T12:00:00').getDay();
+  return g === 0 || g === 6;
+}
+// Aceita uma string livre ("09:00, 10:30 12h00; 14") e devolve a lista limpa/ordenada de "HH:MM".
+function parseHorariosReserva(txt) {
+  const vistos = new Set();
+  const out = [];
+  String(txt || '').split(/[\s,;]+/).forEach((raw) => {
+    const s = raw.trim();
+    if (!s) return;
+    const m = s.match(/^(\d{1,2})(?:[:hH]?(\d{2}))?$/);
+    if (!m) return;
+    const h = String(Math.min(23, Number(m[1]))).padStart(2, '0');
+    const mi = String(Math.min(59, Number(m[2] || 0))).padStart(2, '0');
+    const val = `${h}:${mi}`;
+    if (!vistos.has(val)) { vistos.add(val); out.push(val); }
+  });
+  return out.sort();
+}
+function horariosReservaTexto(arr) { return (arr || []).join(', '); }
+// Grade padrão (config/reservaConfig) pro dia pedido; cai no padrão de fábrica se o admin nunca mexeu.
+function horariosReservaPadrao(isFds) {
+  const c = reservaConfig || {};
+  const lista = isFds ? c.horariosFimDeSemana : c.horariosSemana;
+  if (Array.isArray(lista) && lista.length) return lista;
+  return isFds ? HORARIOS_RESERVA_FDS_PADRAO : HORARIOS_RESERVA_SEMANA_PADRAO;
+}
+// Horários de UMA quadra num dia: usa a lista própria da quadra se ela tiver; senão, a grade padrão.
+function horariosDaQuadra(quadra, isFds) {
+  const proprio = isFds ? quadra.horariosFimDeSemana : quadra.horariosSemana;
+  if (Array.isArray(proprio) && proprio.length) return { horarios: proprio, proprio: true };
+  return { horarios: horariosReservaPadrao(isFds), proprio: false };
+}
+// União de todos os horários que o clube usa em qualquer grade — pro seletor de horário na edição.
+function todosHorariosReservaPossiveis() {
+  const set = new Set([
+    ...HORARIOS_RESERVA_SEMANA_PADRAO, ...HORARIOS_RESERVA_FDS_PADRAO,
+    ...horariosReservaPadrao(false), ...horariosReservaPadrao(true),
+  ]);
+  (quadrasReserva || []).forEach((q) => {
+    (q.horariosSemana || []).forEach((h) => set.add(h));
+    (q.horariosFimDeSemana || []).forEach((h) => set.add(h));
+  });
+  return [...set].sort();
 }
 function reservaPath(data, quadraId, horario) { return `reservas/${data}/${quadraId}/${horario}`; }
 function reservaDe(data, quadraId, horario) {
@@ -2882,7 +2942,7 @@ function renderReservas() {
         </div>
       </div>
     </header>
-    <main class="hp-main">
+    <main class="hp-main hp-main-wide">
       ${reservaFlash ? `<div class="signup-ok" style="margin-top:14px">${esc(reservaFlash)}</div>` : ''}
       ${isAdmin ? renderGestaoQuadrasReserva() : ''}
       ${carregando ? `<div class="hint" style="margin-top:20px">Carregando agenda...</div>` : renderGradeReservas(quadras)}
@@ -2897,18 +2957,39 @@ function renderReservas() {
 
 function renderGestaoQuadrasReserva() {
   const quadras = quadrasReserva || [];
+  const semanaTxt = horariosReservaTexto(horariosReservaPadrao(false));
+  const fdsTxt = horariosReservaTexto(horariosReservaPadrao(true));
   return `
     <section class="card" style="margin-top:16px">
-      <div class="card-head-static">🏟️ Quadras disponíveis pra reserva</div>
+      <div class="card-head-static">🏟️ Quadras e horários de reserva</div>
       <div class="card-body">
-        <div class="hint" style="text-align:left;margin-bottom:6px">Lista exclusiva da agenda de reservas avulsas — não tem relação com as quadras dos torneios.</div>
+        <div class="hint" style="text-align:left;margin-bottom:6px">Agenda de reservas avulsas — não tem relação com as quadras dos torneios. Cada reserva dura 1h30 e o fim é calculado automático. Digite os horários de início separados por vírgula (ex: <code>09:00, 10:30, 14:00</code>).</div>
+
+        <div class="field" style="margin-top:10px">
+          <label>Horários padrão — dia de semana (seg a sex)</label>
+          <input id="reserva-horarios-semana" value="${esc(semanaTxt)}" placeholder="09:00, 10:30, 12:00, 14:00, 15:30, ..." />
+        </div>
+        <div class="field">
+          <label>Horários padrão — fim de semana (sáb e dom)</label>
+          <input id="reserva-horarios-fds" value="${esc(fdsTxt)}" placeholder="09:00, 10:30, 12:00, 13:30, 15:00, ..." />
+        </div>
+        <button class="mode-btn" data-action="reserva-salvar-horarios-padrao">Salvar horários padrão</button>
+
+        <div class="hint" style="text-align:left;margin:16px 0 6px">Quadras — deixe os campos de horário em branco pra a quadra seguir os padrões acima:</div>
         ${quadras.length ? quadras.map((q) => `
-          <div class="reserva-quadra-gestao-item">
-            <input value="${esc(q.nome)}" data-action="reserva-set-quadra-nome" data-id="${esc(q.id)}" />
-            <button class="mode-btn btn-danger" data-action="reserva-remove-quadra" data-id="${esc(q.id)}" data-nome="${esc(q.nome)}">Remover</button>
+          <div class="reserva-quadra-config">
+            <div class="reserva-quadra-gestao-item">
+              <input value="${esc(q.nome)}" data-action="reserva-set-quadra-nome" data-id="${esc(q.id)}" />
+              <button class="mode-btn btn-danger" data-action="reserva-remove-quadra" data-id="${esc(q.id)}" data-nome="${esc(q.nome)}">Remover</button>
+            </div>
+            <div class="row2" style="margin-top:6px">
+              <div class="field"><label>Horário próprio — dia de semana</label><input id="reserva-q-semana-${esc(q.id)}" value="${esc(horariosReservaTexto(q.horariosSemana))}" placeholder="(usa o padrão)" /></div>
+              <div class="field"><label>Horário próprio — fim de semana</label><input id="reserva-q-fds-${esc(q.id)}" value="${esc(horariosReservaTexto(q.horariosFimDeSemana))}" placeholder="(usa o padrão)" /></div>
+            </div>
+            <button class="mode-btn" style="margin-top:4px" data-action="reserva-salvar-horarios-quadra" data-id="${esc(q.id)}">Salvar horários da ${esc(q.nome)}</button>
           </div>
         `).join('') : `<div class="hint">Nenhuma quadra cadastrada ainda — adicione a primeira abaixo.</div>`}
-        <div class="row" style="margin-top:8px">
+        <div class="row" style="margin-top:10px">
           <input id="reserva-nova-quadra" placeholder="Nome da quadra (ex: Quadra 01)" />
           <button data-action="reserva-add-quadra">+</button>
         </div>
@@ -2924,6 +3005,7 @@ function renderGradeReservas(quadras) {
   const datas = datasReserva();
   const dataAtual = selectedReservaData || hojeISO();
   const ehPassado = dataAtual < hojeISO();
+  const isFds = ehFimDeSemana(dataAtual);
   return `
     <div class="tabs reserva-datas" style="margin-top:16px">
       ${datas.map((d) => `<button class="tab ${d === dataAtual ? 'active' : ''}" data-action="reserva-sel-data" data-data="${d}">${esc(rotuloDataReserva(d))}${d === hojeISO() ? ' · hoje' : ''}</button>`).join('')}
@@ -2934,21 +3016,19 @@ function renderGradeReservas(quadras) {
       <span><span class="reserva-dot livre"></span> Livre</span>
       <span><span class="reserva-dot ocupada"></span> Reservado</span>
       <span><span class="reserva-dot pendente"></span> Aguardando pagamento</span>
+      <span>· grade de ${isFds ? 'fim de semana' : 'dia de semana'}</span>
     </div>
-    <div class="table-scroll">
-      <table class="reserva-grid">
-        <thead>
-          <tr><th>Horário</th>${quadras.map((q) => `<th>${esc(q.nome)}</th>`).join('')}</tr>
-        </thead>
-        <tbody>
-          ${HORARIOS_RESERVA.map((h) => `
-            <tr>
-              <td class="reserva-hora">${h}<br>–${fimHorarioReserva(h)}</td>
-              ${quadras.map((q) => renderCelulaReserva(dataAtual, q, h)).join('')}
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+    <div class="reserva-quadras-blocos">
+      ${quadras.map((q) => {
+        const { horarios, proprio } = horariosDaQuadra(q, isFds);
+        return `
+        <div class="reserva-quadra-bloco">
+          <div class="reserva-quadra-bloco-titulo">${esc(q.nome)}${proprio ? ` <span class="hint">horário próprio</span>` : ''}</div>
+          ${horarios.length ? `<table class="reserva-grid-quadra"><tbody>
+            ${horarios.map((h) => `<tr><td class="reserva-hora">${h}<br>–${fimHorarioReserva(h)}</td>${renderCelulaReserva(dataAtual, q, h)}</tr>`).join('')}
+          </tbody></table>` : `<div class="hint" style="padding:12px">Sem horários configurados pra ${isFds ? 'fim de semana' : 'dia de semana'}.</div>`}
+        </div>`;
+      }).join('')}
     </div>
   `;
 }
@@ -3032,7 +3112,7 @@ function renderReservaModal() {
       </select>
       <label style="font-size:12px;opacity:.6">Horário</label>
       <select id="reserva-horario">
-        ${HORARIOS_RESERVA.map((h) => `<option value="${h}" ${h === horario ? 'selected' : ''}>${h}–${fimHorarioReserva(h)}</option>`).join('')}
+        ${[...new Set([...todosHorariosReservaPossiveis(), horario])].sort().map((h) => `<option value="${h}" ${h === horario ? 'selected' : ''}>${h}–${fimHorarioReserva(h)}</option>`).join('')}
       </select>
       ${reservaErroMsg ? `<div class="hint hint-alerta" style="text-align:left">${esc(reservaErroMsg)}</div>` : ''}
       <div class="modal-actions"><button data-action="reserva-fechar-modal">Cancelar</button><button class="btn-primary" data-action="reserva-salvar-edicao">Salvar</button></div>
@@ -3206,6 +3286,26 @@ function removerQuadraReservaHandler(id, nome) {
   if (!confirm(`Remover a quadra "${nome || 'esta quadra'}" da agenda de reservas? Reservas já feitas nela deixam de aparecer na grade (continuam no banco). Não afeta nenhum torneio.`)) return;
   const nova = (quadrasReserva || []).filter((q) => q.id !== id);
   set(ref(db, 'config/quadrasReserva'), nova).catch((e) => console.error('Falha ao remover quadra de reserva', e));
+}
+function salvarHorariosPadraoReservaHandler() {
+  const semana = parseHorariosReserva(document.getElementById('reserva-horarios-semana')?.value);
+  const fds = parseHorariosReserva(document.getElementById('reserva-horarios-fds')?.value);
+  if (!semana.length) { alert('Informe pelo menos um horário pra dia de semana (formato HH:MM).'); return; }
+  if (!fds.length) { alert('Informe pelo menos um horário pra fim de semana (formato HH:MM).'); return; }
+  set(ref(db, 'config/reservaConfig'), { ...(reservaConfig || {}), horariosSemana: semana, horariosFimDeSemana: fds })
+    .catch((e) => { console.error('Falha ao salvar horários padrão de reserva', e); alert('Erro ao salvar. Tente de novo.'); });
+}
+function salvarHorariosQuadraReservaHandler(id) {
+  const semana = parseHorariosReserva(document.getElementById(`reserva-q-semana-${id}`)?.value);
+  const fds = parseHorariosReserva(document.getElementById(`reserva-q-fds-${id}`)?.value);
+  const nova = (quadrasReserva || []).map((q) => {
+    if (q.id !== id) return q;
+    const copia = { ...q };
+    if (semana.length) copia.horariosSemana = semana; else delete copia.horariosSemana;
+    if (fds.length) copia.horariosFimDeSemana = fds; else delete copia.horariosFimDeSemana;
+    return copia;
+  });
+  set(ref(db, 'config/quadrasReserva'), nova).catch((e) => { console.error('Falha ao salvar horários da quadra', e); alert('Erro ao salvar. Tente de novo.'); });
 }
 
 render();

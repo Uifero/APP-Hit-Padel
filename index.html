@@ -254,30 +254,37 @@
 
   /* ---- Reserva de quadra (agenda avulsa) ---- */
   .reserva-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0;}
-  .reserva-toolbar input[type=date]{width:auto;padding:7px 10px;border-radius:10px;background:var(--navy-deep);border:1px solid var(--line);color:var(--chalk);}
-  .reserva-legenda{display:flex;gap:14px;font-size:12px;opacity:.8;margin-bottom:10px;flex-wrap:wrap;}
+  .reserva-toolbar input[type=date]{width:auto;padding:8px 10px;border-radius:10px;background:var(--navy-deep);border:1px solid var(--line);color:var(--chalk);}
+  .reserva-datas .tab{font-size:13px;}
+  .reserva-legenda{display:flex;gap:16px;font-size:12px;opacity:.8;margin-bottom:12px;flex-wrap:wrap;}
   .reserva-legenda span{display:flex;align-items:center;gap:5px;}
   .reserva-dot{width:12px;height:12px;border-radius:4px;display:inline-block;flex-shrink:0;}
   .reserva-dot.livre{background:#2f7a4a;}
   .reserva-dot.ocupada{background:#b04545;}
   .reserva-dot.pendente{background:var(--orange);}
-  table.reserva-grid{width:100%;border-collapse:collapse;font-size:13px;border:1px solid var(--line);border-radius:12px;overflow:hidden;}
-  table.reserva-grid th,table.reserva-grid td{border:1px solid var(--line);padding:6px 8px;text-align:center;vertical-align:middle;}
-  table.reserva-grid thead th{background:var(--navy);font-family:'Bebas Neue',sans-serif;font-size:14px;color:var(--orange);white-space:nowrap;}
-  table.reserva-grid td.reserva-hora{font-weight:700;color:var(--yellow);white-space:nowrap;font-size:11px;background:var(--navy);}
-  .reserva-cel{min-width:118px;}
-  .reserva-cel-livre{cursor:pointer;background:rgba(47,122,74,.18);color:#bfe6cc;font-weight:600;}
-  .reserva-cel-livre:hover{background:rgba(47,122,74,.34);}
+  /* uma coluna por quadra: no celular empilha, no desktop espalha lado a lado */
+  .reserva-quadras-blocos{display:grid;grid-template-columns:1fr;gap:16px;}
+  @media (min-width:560px){.reserva-quadras-blocos{grid-template-columns:repeat(auto-fill,minmax(320px,1fr));}}
+  .reserva-quadra-bloco{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--navy-deep);}
+  .reserva-quadra-bloco-titulo{background:var(--navy);font-family:'Bebas Neue',sans-serif;font-size:19px;color:var(--orange);padding:10px 14px;display:flex;align-items:baseline;gap:8px;}
+  .reserva-quadra-bloco-titulo .hint{font-family:'Inter',sans-serif;font-size:11px;color:var(--chalk);opacity:.6;}
+  table.reserva-grid-quadra{width:100%;border-collapse:collapse;font-size:14px;}
+  table.reserva-grid-quadra td{border-top:1px solid var(--line);padding:10px;text-align:center;vertical-align:middle;}
+  table.reserva-grid-quadra td.reserva-hora{white-space:nowrap;font-size:12px;font-weight:700;color:var(--yellow);width:82px;background:rgba(255,255,255,0.03);line-height:1.4;}
+  .reserva-cel-livre{cursor:pointer;background:rgba(47,122,74,.20);color:#cdeed7;font-weight:700;font-size:15px;}
+  .reserva-cel-livre:hover{background:rgba(47,122,74,.36);}
   .reserva-cel-passado{opacity:.3;}
   .reserva-cel-ocupada{background:rgba(176,69,69,.16);}
   .reserva-cel-ocupada.reserva-cel-pendente{background:rgba(246,107,13,.14);}
-  .reserva-cel-nome{font-weight:700;font-size:12px;}
-  .reserva-cel-tel{font-size:11px;opacity:.7;}
-  .reserva-cel-badge{font-size:10px;opacity:.8;margin-top:2px;}
-  .reserva-cel-acoes{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-top:6px;}
-  .reserva-cel-acoes button{font-size:10px;padding:3px 6px;border-radius:6px;border:1px solid var(--line);background:var(--navy-deep);color:var(--chalk);cursor:pointer;}
+  .reserva-cel-nome{font-weight:700;font-size:13px;}
+  .reserva-cel-tel{font-size:12px;opacity:.7;}
+  .reserva-cel-badge{font-size:11px;opacity:.8;margin-top:3px;}
+  .reserva-cel-acoes{display:flex;flex-wrap:wrap;gap:5px;justify-content:center;margin-top:8px;}
+  .reserva-cel-acoes button{font-size:11px;padding:5px 9px;border-radius:7px;border:1px solid var(--line);background:var(--navy-deep);color:var(--chalk);cursor:pointer;}
   .reserva-quadra-gestao-item{display:flex;gap:6px;align-items:center;margin-bottom:6px;}
   .reserva-quadra-gestao-item input{flex:1;padding:9px 12px;border-radius:10px;background:var(--navy-deep);border:1px solid var(--line);color:var(--chalk);}
+  .reserva-quadra-config{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:12px;}
+  .reserva-quadra-config .row2{gap:8px;}
   .modal select{width:100%;padding:10px;border-radius:10px;background:var(--navy-deep);border:1px solid var(--line);color:var(--chalk);margin-bottom:8px;outline:none;}
 
   #print-area{display:none;}
