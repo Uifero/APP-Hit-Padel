@@ -1845,6 +1845,7 @@ function bindEvents() {
     if (action === 'reserva-salvar-horarios-padrao') el.addEventListener('click', salvarHorariosPadraoReservaHandler);
     if (action === 'reserva-salvar-horarios-quadra') el.addEventListener('click', () => salvarHorariosQuadraReservaHandler(el.dataset.id));
     if (action === 'reserva-aviso-toggle') el.addEventListener('click', () => { reservaAvisoAberto = !reservaAvisoAberto; render(); });
+    if (action === 'reserva-toggle-notif') el.addEventListener('click', toggleNotificacoesReservaHandler);
     if (action === 'reserva-remove-quadra') el.addEventListener('click', () => removerQuadraReservaHandler(el.dataset.id, el.dataset.nome));
     if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
     if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
@@ -2799,6 +2800,7 @@ function entrarReservas() {
   if (!unsubReservas) {
     unsubReservas = onValue(ref(db, 'reservas'), (snap) => {
       reservasData = snap.val() || {};
+      verificarNovasReservas();
       render();
     }, (err) => {
       // Ex.: regras do Realtime Database ainda não publicadas (o deploy delas é manual neste projeto)
@@ -2906,6 +2908,73 @@ function todosHorariosReservaPossiveis() {
     (q.horariosFimDeSemana || []).forEach((h) => set.add(h));
   });
   return [...set].sort();
+}
+// Notificação do navegador quando entra reserva feita por CLIENTE (não pelo admin). Mesmo mecanismo
+// das inscrições de torneio: só dispara enquanto esta tela está aberta como admin, com permissão
+// concedida. Sem backend, sem WhatsApp — é o que o plano grátis permite.
+const NOTIF_RESERVAS_ON_KEY = 'hitpadel_notif_reservas_on';
+const NOTIF_RESERVAS_SEEN_KEY = 'hitpadel_notif_reservas_seen';
+function notificacoesReservaAtivas() {
+  try { return localStorage.getItem(NOTIF_RESERVAS_ON_KEY) === '1'; } catch (e) { return false; }
+}
+function coletarReservasFlat() {
+  const out = [];
+  const rd = reservasData || {};
+  Object.keys(rd).forEach((data) => {
+    Object.keys(rd[data] || {}).forEach((quadraId) => {
+      Object.keys(rd[data][quadraId] || {}).forEach((horario) => {
+        const r = rd[data][quadraId][horario];
+        if (r && r.id) out.push({ ...r, quadraId, data, horario });
+      });
+    });
+  });
+  return out;
+}
+function verificarNovasReservas() {
+  if (!isAdmin || typeof Notification === 'undefined') return;
+  if (!notificacoesReservaAtivas() || Notification.permission !== 'granted') return;
+  const initKey = NOTIF_RESERVAS_SEEN_KEY + '_init';
+  let seen;
+  try { seen = JSON.parse(localStorage.getItem(NOTIF_RESERVAS_SEEN_KEY) || '[]'); } catch (e) { seen = []; }
+  const seenSet = new Set(seen);
+  const todas = coletarReservasFlat();
+  let primeiraVez = false;
+  try { primeiraVez = localStorage.getItem(initKey) !== '1'; } catch (e) { /* localStorage indisponível */ }
+  if (primeiraVez) {
+    todas.forEach((r) => seenSet.add(r.id));
+    try { localStorage.setItem(NOTIF_RESERVAS_SEEN_KEY, JSON.stringify([...seenSet])); localStorage.setItem(initKey, '1'); } catch (e) { /* idem */ }
+    return;
+  }
+  const novas = todas.filter((r) => !seenSet.has(r.id));
+  todas.forEach((r) => seenSet.add(r.id));
+  try { localStorage.setItem(NOTIF_RESERVAS_SEEN_KEY, JSON.stringify([...seenSet])); } catch (e) { /* idem */ }
+  novas.filter((r) => r.origem === 'cliente').forEach((r) => {
+    try {
+      new Notification('Nova reserva de quadra', {
+        body: `${r.nome || 'Sem nome'} · ${quadraReservaNome(r.quadraId)} · ${rotuloDataReserva(r.data)} ${r.horario}`,
+        icon: './logo.png',
+      });
+    } catch (e) { console.error(e); }
+  });
+}
+async function toggleNotificacoesReservaHandler() {
+  if (typeof Notification === 'undefined') { alert('Seu navegador não suporta notificações.'); return; }
+  if (notificacoesReservaAtivas()) {
+    try { localStorage.setItem(NOTIF_RESERVAS_ON_KEY, '0'); } catch (e) { /* localStorage indisponível */ }
+    render();
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    try {
+      localStorage.setItem(NOTIF_RESERVAS_ON_KEY, '1');
+      localStorage.setItem(NOTIF_RESERVAS_SEEN_KEY, JSON.stringify(coletarReservasFlat().map((r) => r.id)));
+      localStorage.setItem(NOTIF_RESERVAS_SEEN_KEY + '_init', '1');
+    } catch (e) { /* idem */ }
+  } else {
+    alert('Permissão de notificação negada. Ative nas configurações do navegador se quiser usar esse recurso.');
+  }
+  render();
 }
 function reservaPath(data, quadraId, horario) { return `reservas/${data}/${quadraId}/${horario}`; }
 function reservaDe(data, quadraId, horario) {
@@ -3020,6 +3089,12 @@ function renderGestaoQuadrasReserva() {
       <div class="card-head-static">🏟️ Quadras e horários de reserva</div>
       <div class="card-body">
         <div class="hint" style="text-align:left;margin-bottom:6px">Agenda de reservas avulsas — não tem relação com as quadras dos torneios. Cada reserva dura 1h30 e o fim é calculado automático. Digite os horários de início separados por vírgula (ex: <code>09:00, 10:30, 14:00</code>).</div>
+
+        <div class="field">
+          <label>Avisar quando um cliente reservar</label>
+          <button class="mode-btn ${notificacoesReservaAtivas() ? 'active' : ''}" data-action="reserva-toggle-notif">${notificacoesReservaAtivas() ? '✓ Avisos ligados' : '🔔 Ligar avisos no navegador'}</button>
+          <div class="hint" style="text-align:left;margin-top:4px">Mostra um aviso do navegador (celular ou PC) quando um cliente faz uma reserva sozinho — funciona enquanto esta tela estiver aberta. Reservas que você mesmo cadastra não avisam.</div>
+        </div>
 
         <div class="field" style="margin-top:10px">
           <label>Horários padrão — dia de semana (seg a sex)</label>
