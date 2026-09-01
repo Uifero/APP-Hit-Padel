@@ -97,6 +97,24 @@ let pubPagamentoErroMsg = null; // mensagem de erro (ex.: organizador sem chave 
 let pubComprovanteEnviando = false; // true enquanto o comprovante está subindo pro Storage
 let pubComprovanteErroMsg = null; // erro do envio do comprovante
 
+// ---------- Reserva de quadra (agenda avulsa, independente de torneio) ----------
+// Grade fixa de horários do dia — 1h30 por reserva. O de 21:30 começa só 30min depois do anterior,
+// pra aproveitar até o fechamento, mas a reserva em si dura 1h30 do mesmo jeito (termina 23:00).
+// Ajuste esta lista pra mudar a grade — nada é recalculado na mão em nenhum outro lugar.
+const HORARIOS_RESERVA = ['09:00', '10:30', '12:00', '13:30', '15:00', '16:30', '18:00', '19:30', '21:00', '21:30'];
+const DURACAO_RESERVA_MIN = 90;
+const DIAS_ANTECEDENCIA_RESERVA = 7; // mostra/permite de hoje até +7 dias
+let reservasView = false;
+let quadrasReserva = null;   // null = carregando | [{ id, nome }] (config/quadrasReserva)
+let reservasData = null;     // null = carregando | { [data]: { [quadraId]: { [horario]: reserva } } }
+let unsubQuadrasReserva = null;
+let unsubReservas = null;
+let selectedReservaData = null;   // 'YYYY-MM-DD'
+let reservaModal = null;          // { modo:'novo'|'pagamento'|'editar', data, quadraId, horario, id? }
+let reservaFlash = null;          // mensagem de sucesso curta (admin)
+let reservaEnviandoComprovante = false;
+let reservaErroMsg = null;
+
 const root = document.getElementById('root');
 
 async function persist(next) {
@@ -284,11 +302,14 @@ function pixSalvarHandler() {
 currentTournamentId = getUrlTournamentId();
 selectedCategoria = getUrlParam('cat') || null;
 tab = getUrlParam('tab') || 'rodadas';
-if (currentTournamentId) carregarTorneioAtual();
+if (getUrlParam('reservas') === '1') entrarReservas();
+else if (currentTournamentId) carregarTorneioAtual();
 window.addEventListener('popstate', () => {
   currentTournamentId = getUrlTournamentId();
   selectedCategoria = getUrlParam('cat') || null;
   tab = getUrlParam('tab') || 'rodadas';
+  if (getUrlParam('reservas') === '1') { entrarReservas(); return; }
+  if (reservasView) sairReservas();
   carregarTorneioAtual();
   render();
 });
@@ -393,6 +414,7 @@ function renderProximaPartidaPublica(catKey) {
 }
 
 function render() {
+  if (reservasView) { renderReservas(); return; }
   if (!currentTournamentId) { renderLobby(); return; }
   if (!state) {
     agendarAvisoSeDemorar();
@@ -704,7 +726,10 @@ function renderLobby() {
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
           <div><div class="hp-name">HIT PADEL</div><div class="hp-live"><span class="dot"></span> ao vivo</div></div>
         </div>
-        <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
+        <div class="hp-header-actions">
+          <button class="hp-back-btn" data-action="abrir-reservas">🎾 Reservar quadra</button>
+          <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
+        </div>
       </div>
     </header>
     <main class="hp-main ${isAdmin ? 'hp-main-wide' : ''}">
@@ -1791,6 +1816,28 @@ function bindEvents() {
     if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; render(); });
     if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; tab = state.tipo === 'chaves' ? 'jogos' : 'rodadas'; render(); });
     if (action === 'voltar-lobby') el.addEventListener('click', () => selecionarTorneio(null));
+    if (action === 'abrir-reservas') el.addEventListener('click', abrirReservasHandler);
+    if (action === 'voltar-lobby-de-reservas') el.addEventListener('click', sairReservasHandler);
+    if (action === 'reserva-sel-data') el.addEventListener('click', () => { selectedReservaData = el.dataset.data; reservaFlash = null; render(); });
+    if (action === 'reserva-data-livre') el.addEventListener('change', () => { if (el.value) { selectedReservaData = el.value; reservaFlash = null; render(); } });
+    if (action === 'reserva-abrir') el.addEventListener('click', () => abrirModalNovaReserva(el.dataset.data, el.dataset.quadra, el.dataset.horario));
+    if (action === 'reserva-criar') el.addEventListener('click', criarReservaHandler);
+    if (action === 'reserva-fechar-modal') el.addEventListener('click', fecharReservaModal);
+    if (action === 'reserva-toggle-status') el.addEventListener('click', () => toggleStatusReservaHandler(el.dataset.data, el.dataset.quadra, el.dataset.horario));
+    if (action === 'reserva-cancelar') el.addEventListener('click', () => cancelarReservaHandler(el.dataset.data, el.dataset.quadra, el.dataset.horario, el.dataset.nome));
+    if (action === 'reserva-editar') el.addEventListener('click', () => abrirModalEditarReserva(el.dataset.data, el.dataset.quadra, el.dataset.horario));
+    if (action === 'reserva-salvar-edicao') el.addEventListener('click', salvarEdicaoReservaHandler);
+    if (action === 'reserva-ver-comprovante') el.addEventListener('click', () => verComprovanteHandler('comprovantes/reservas/' + el.dataset.id));
+    if (action === 'reserva-enviar-comprovante') el.addEventListener('click', () => {
+      const input = document.getElementById('reserva-comprovante-input');
+      const file = input && input.files && input.files[0];
+      if (!file) { reservaErroMsg = 'Escolha um arquivo primeiro.'; render(); return; }
+      enviarComprovanteReservaHandler(file);
+    });
+    if (action === 'reserva-copiar-pix') el.addEventListener('click', () => copiarPixHandler(el.dataset.texto));
+    if (action === 'reserva-add-quadra') el.addEventListener('click', addQuadraReservaHandler);
+    if (action === 'reserva-set-quadra-nome') el.addEventListener('change', () => renomearQuadraReservaHandler(el.dataset.id, el.value));
+    if (action === 'reserva-remove-quadra') el.addEventListener('click', () => removerQuadraReservaHandler(el.dataset.id, el.dataset.nome));
     if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
     if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -2052,7 +2099,7 @@ function bindEvents() {
       row.style.display = (!termo || nome.includes(termo)) ? '' : 'none';
     });
   });
-  [['pub-player-name', 'pub-player-phone'], ['pub-team-j1', 'pub-team-tel1'], ['pub-team-j2', 'pub-team-tel2'], ['new-team-j1', 'new-team-tel1'], ['new-team-j2', 'new-team-tel2']].forEach(([nomeId, telId]) => {
+  [['pub-player-name', 'pub-player-phone'], ['pub-team-j1', 'pub-team-tel1'], ['pub-team-j2', 'pub-team-tel2'], ['new-team-j1', 'new-team-tel1'], ['new-team-j2', 'new-team-tel2'], ['reserva-nome', 'reserva-telefone']].forEach(([nomeId, telId]) => {
     const nomeEl = document.getElementById(nomeId);
     const telEl = document.getElementById(telId);
     if (!nomeEl || !telEl) return;
@@ -2062,6 +2109,18 @@ function bindEvents() {
       if (conhecido && conhecido.telefone) telEl.value = conhecido.telefone;
     });
   });
+  const reservaModalBg = document.querySelector('[data-action="reserva-modal-bg"]');
+  if (reservaModalBg) {
+    reservaModalBg.addEventListener('click', fecharReservaModal);
+    reservaModalBg.querySelector('.modal')?.addEventListener('click', (e) => e.stopPropagation());
+    ['reserva-nome', 'reserva-telefone'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        if (reservaModal && reservaModal.modo === 'editar') salvarEdicaoReservaHandler();
+        else criarReservaHandler();
+      });
+    });
+  }
 }
 
 function bindPinModal() {
@@ -2704,6 +2763,449 @@ function saveBracketScoreHandler(matchId) {
   persist({ ...state, eliminatorias });
   savedFlash = matchId; render();
   setTimeout(() => { savedFlash = null; render(); }, 1500);
+}
+
+// ============================ Reserva de quadra ============================
+// Agenda geral do clube pra jogo avulso, sem relação nenhuma com os torneios (torneios/{id} não é
+// tocado aqui). Qualquer pessoa com o link (?reservas=1) vê os horários livres/ocupados e pode
+// reservar sozinha; o clube confere o Pix e confirma manualmente — mesmo fluxo das inscrições.
+// Dados: reservas/{data}/{quadraId}/{horario} = { id, nome, telefone, status, origem, criadoEm };
+// lista de quadras em config/quadrasReserva ([{id,nome}]); comprovante em comprovantes/reservas/{id}.
+// Escolha de privacidade: o público vê só "Reservado" (sem nome/telefone) — só o admin vê os dados
+// de quem reservou.
+
+function entrarReservas() {
+  reservasView = true;
+  if (!selectedReservaData || selectedReservaData < hojeISO()) selectedReservaData = hojeISO();
+  if (!unsubQuadrasReserva) {
+    unsubQuadrasReserva = onValue(ref(db, 'config/quadrasReserva'), (snap) => {
+      const v = snap.val();
+      quadrasReserva = Array.isArray(v) ? v.filter(Boolean) : (v ? Object.values(v) : []);
+      render();
+    }, (err) => {
+      console.error('Falha ao ler quadras de reserva', err);
+      if (quadrasReserva === null) quadrasReserva = [];
+      render();
+    });
+  }
+  if (!unsubReservas) {
+    unsubReservas = onValue(ref(db, 'reservas'), (snap) => {
+      reservasData = snap.val() || {};
+      render();
+    }, (err) => {
+      // Ex.: regras do Realtime Database ainda não publicadas (o deploy delas é manual neste projeto)
+      // — mostra a agenda vazia em vez de travar no "Carregando", e as escritas seguem tratadas com catch.
+      console.error('Falha ao ler reservas', err);
+      if (reservasData === null) reservasData = {};
+      render();
+    });
+  }
+  render();
+}
+function sairReservas() {
+  reservasView = false;
+  reservaModal = null;
+  reservaFlash = null;
+  if (unsubQuadrasReserva) { unsubQuadrasReserva(); unsubQuadrasReserva = null; }
+  if (unsubReservas) { unsubReservas(); unsubReservas = null; }
+  quadrasReserva = null;
+  reservasData = null;
+}
+function abrirReservasHandler() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('reservas', '1');
+  url.searchParams.delete('t'); url.searchParams.delete('cat'); url.searchParams.delete('tab');
+  window.history.pushState({}, '', url);
+  entrarReservas();
+}
+function sairReservasHandler() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('reservas');
+  window.history.pushState({}, '', url);
+  sairReservas();
+  render();
+}
+
+function isoComOffset(dias) {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + dias);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function datasReserva() {
+  const arr = [];
+  for (let i = 0; i <= DIAS_ANTECEDENCIA_RESERVA; i++) arr.push(isoComOffset(i));
+  return arr;
+}
+function rotuloDataReserva(iso) {
+  const d = new Date(iso + 'T12:00:00');
+  const semana = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'][d.getDay()];
+  return `${semana} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+function fimHorarioReserva(horario) {
+  return minutosParaHora(horaParaMinutos(horario) + DURACAO_RESERVA_MIN);
+}
+function reservaPath(data, quadraId, horario) { return `reservas/${data}/${quadraId}/${horario}`; }
+function reservaDe(data, quadraId, horario) {
+  const porData = reservasData && reservasData[data];
+  const porQuadra = porData && porData[quadraId];
+  return (porQuadra && porQuadra[horario]) || null;
+}
+// Um horário só pode ser reservado se ainda não começou. Dia anterior = tudo no passado; hoje =
+// compara o início do slot com o relógio; dias à frente = sempre liberado.
+function slotReservaNoPassado(data, horario) {
+  const hoje = hojeISO();
+  if (data < hoje) return true;
+  if (data > hoje) return false;
+  const [h, m] = horario.split(':').map(Number);
+  const agora = new Date();
+  return (h * 60 + m) <= (agora.getHours() * 60 + agora.getMinutes());
+}
+function quadraReservaNome(quadraId) {
+  const q = (quadrasReserva || []).find((x) => x.id === quadraId);
+  return q ? q.nome : 'Quadra removida';
+}
+
+function renderReservas() {
+  const carregando = quadrasReserva === null || reservasData === null;
+  const quadras = quadrasReserva || [];
+  root.innerHTML = `
+    <header class="hp-header">
+      <div class="hp-header-inner">
+        <div class="hp-brand">
+          <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
+          <div><div class="hp-name">RESERVAR QUADRA</div><div class="hp-live"><span class="dot"></span> agenda do clube</div></div>
+        </div>
+        <div class="hp-header-actions">
+          <button class="hp-back-btn" data-action="voltar-lobby-de-reservas">◀ Torneios</button>
+          <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
+        </div>
+      </div>
+    </header>
+    <main class="hp-main">
+      ${reservaFlash ? `<div class="signup-ok" style="margin-top:14px">${esc(reservaFlash)}</div>` : ''}
+      ${isAdmin ? renderGestaoQuadrasReserva() : ''}
+      ${carregando ? `<div class="hint" style="margin-top:20px">Carregando agenda...</div>` : renderGradeReservas(quadras)}
+    </main>
+    <datalist id="atletas-datalist">${Object.values(atletasConhecidos).map((a) => `<option value="${esc(a.nome)}"></option>`).join('')}</datalist>
+    <div id="pin-modal-slot"></div>
+    ${reservaModal ? renderReservaModal() : ''}
+    <footer class="hp-footer">atualiza automaticamente</footer>
+  `;
+  bindEvents();
+}
+
+function renderGestaoQuadrasReserva() {
+  const quadras = quadrasReserva || [];
+  return `
+    <section class="card" style="margin-top:16px">
+      <div class="card-head-static">🏟️ Quadras disponíveis pra reserva</div>
+      <div class="card-body">
+        <div class="hint" style="text-align:left;margin-bottom:6px">Lista exclusiva da agenda de reservas avulsas — não tem relação com as quadras dos torneios.</div>
+        ${quadras.length ? quadras.map((q) => `
+          <div class="reserva-quadra-gestao-item">
+            <input value="${esc(q.nome)}" data-action="reserva-set-quadra-nome" data-id="${esc(q.id)}" />
+            <button class="mode-btn btn-danger" data-action="reserva-remove-quadra" data-id="${esc(q.id)}" data-nome="${esc(q.nome)}">Remover</button>
+          </div>
+        `).join('') : `<div class="hint">Nenhuma quadra cadastrada ainda — adicione a primeira abaixo.</div>`}
+        <div class="row" style="margin-top:8px">
+          <input id="reserva-nova-quadra" placeholder="Nome da quadra (ex: Quadra 01)" />
+          <button data-action="reserva-add-quadra">+</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderGradeReservas(quadras) {
+  if (!quadras.length) {
+    return `<div class="card" style="margin-top:16px"><div class="card-body"><div class="hint" style="text-align:left">${isAdmin ? 'Cadastre pelo menos uma quadra acima pra abrir a agenda de reservas.' : 'A agenda de reservas ainda não está disponível. Fale com o clube.'}</div></div></div>`;
+  }
+  const datas = datasReserva();
+  const dataAtual = selectedReservaData || hojeISO();
+  const ehPassado = dataAtual < hojeISO();
+  return `
+    <div class="tabs reserva-datas" style="margin-top:16px">
+      ${datas.map((d) => `<button class="tab ${d === dataAtual ? 'active' : ''}" data-action="reserva-sel-data" data-data="${d}">${esc(rotuloDataReserva(d))}${d === hojeISO() ? ' · hoje' : ''}</button>`).join('')}
+    </div>
+    ${isAdmin ? `<div class="reserva-toolbar"><span class="hint">Ver outra data (histórico):</span><input type="date" data-action="reserva-data-livre" value="${esc(dataAtual)}" /></div>` : ''}
+    ${ehPassado ? `<div class="hint hint-alerta" style="text-align:left;margin-bottom:8px">Data no passado — não é possível reservar${isAdmin ? '; dá só pra editar/cancelar pra organizar o histórico' : ''}.</div>` : ''}
+    <div class="reserva-legenda">
+      <span><span class="reserva-dot livre"></span> Livre</span>
+      <span><span class="reserva-dot ocupada"></span> Reservado</span>
+      <span><span class="reserva-dot pendente"></span> Aguardando pagamento</span>
+    </div>
+    <div class="table-scroll">
+      <table class="reserva-grid">
+        <thead>
+          <tr><th>Horário</th>${quadras.map((q) => `<th>${esc(q.nome)}</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          ${HORARIOS_RESERVA.map((h) => `
+            <tr>
+              <td class="reserva-hora">${h}<br>–${fimHorarioReserva(h)}</td>
+              ${quadras.map((q) => renderCelulaReserva(dataAtual, q, h)).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderCelulaReserva(data, quadra, horario) {
+  const r = reservaDe(data, quadra.id, horario);
+  const passado = slotReservaNoPassado(data, horario);
+  if (!r) {
+    if (passado) return `<td class="reserva-cel reserva-cel-passado">—</td>`;
+    return `<td class="reserva-cel reserva-cel-livre" data-action="reserva-abrir" data-data="${data}" data-quadra="${esc(quadra.id)}" data-horario="${horario}">Livre</td>`;
+  }
+  const pend = r.status !== 'confirmada';
+  if (!isAdmin) {
+    return `<td class="reserva-cel reserva-cel-ocupada ${pend ? 'reserva-cel-pendente' : ''}">${pend ? '⏳ ' : ''}Reservado</td>`;
+  }
+  return `
+    <td class="reserva-cel reserva-cel-ocupada ${pend ? 'reserva-cel-pendente' : ''}">
+      <div class="reserva-cel-nome">${esc(r.nome || '—')}</div>
+      ${r.telefone ? `<div class="reserva-cel-tel">${esc(r.telefone)}</div>` : ''}
+      <div class="reserva-cel-badge">${pend ? '⏳ pendente' : '✓ confirmada'} · ${r.origem === 'admin' ? 'balcão' : 'cliente'}${r.comprovante ? ' · 📎' : ''}</div>
+      <div class="reserva-cel-acoes">
+        <button data-action="reserva-toggle-status" data-data="${data}" data-quadra="${esc(quadra.id)}" data-horario="${horario}">${pend ? 'Confirmar' : 'Tornar pendente'}</button>
+        <button data-action="reserva-editar" data-data="${data}" data-quadra="${esc(quadra.id)}" data-horario="${horario}">Editar</button>
+        ${r.comprovante ? `<button data-action="reserva-ver-comprovante" data-id="${esc(r.id)}">Comprovante</button>` : ''}
+        <button class="btn-danger" data-action="reserva-cancelar" data-data="${data}" data-quadra="${esc(quadra.id)}" data-horario="${horario}" data-nome="${esc(r.nome || '')}">Cancelar</button>
+      </div>
+    </td>
+  `;
+}
+
+function renderReservaModal() {
+  const { modo, data, quadraId, horario } = reservaModal;
+  const tituloSlot = `${quadraReservaNome(quadraId)} · ${rotuloDataReserva(data)} · ${horario}–${fimHorarioReserva(horario)}`;
+  if (modo === 'pagamento') {
+    const temChave = !!(pixConfig && pixConfig.chave);
+    const r = reservaDe(data, quadraId, horario);
+    const jaEnviou = !!(r && r.comprovante);
+    return `
+    <div class="modal-bg" data-action="reserva-modal-bg"><div class="modal">
+      <div class="modal-title">Reserva registrada</div>
+      <div class="hint" style="text-align:left;margin-bottom:8px">${esc(tituloSlot)}</div>
+      <div class="hint" style="text-align:left;margin-bottom:8px">✅ Sua reserva foi registrada e fica <strong>pendente</strong> até o clube confirmar o pagamento.</div>
+      ${temChave ? `
+        <label style="font-size:12px;opacity:.6">Chave Pix</label>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
+          <input readonly class="pix-copia-cola" style="min-height:auto;padding:9px 12px;font-family:inherit;font-size:14px" value="${esc(pixConfig.chave)}" />
+          <button class="mode-btn" data-action="reserva-copiar-pix" data-texto="${esc(pixConfig.chave)}">📋</button>
+        </div>
+        ${pixConfig.nome ? `<div class="hint" style="text-align:left;margin-bottom:8px">Recebedor: ${esc(pixConfig.nome)}${pixConfig.cidade ? ` — ${esc(pixConfig.cidade)}` : ''}</div>` : ''}
+      ` : `<div class="hint hint-alerta" style="text-align:left;margin-bottom:8px">O clube ainda não configurou a chave Pix — combine o pagamento direto com o clube.</div>`}
+      <label style="font-size:12px;opacity:.6;margin-top:8px;display:block">📎 Anexar comprovante (foto ou PDF)</label>
+      <input type="file" accept="image/*,application/pdf" id="reserva-comprovante-input" style="margin-bottom:8px" />
+      <button class="btn-primary" data-action="reserva-enviar-comprovante" ${reservaEnviandoComprovante ? 'disabled' : ''}>${reservaEnviandoComprovante ? 'Enviando...' : 'Enviar comprovante'}</button>
+      ${reservaErroMsg ? `<div class="hint hint-alerta" style="text-align:left;margin-top:4px">${esc(reservaErroMsg)}</div>` : ''}
+      ${jaEnviou ? `<div class="hint" style="text-align:left;margin-top:6px">✓ Comprovante enviado — aguardando o clube conferir.</div>` : ''}
+      <div class="modal-actions" style="margin-top:10px"><button data-action="reserva-fechar-modal">Fechar</button></div>
+    </div></div>`;
+  }
+  if (modo === 'editar') {
+    const r = reservaDe(data, quadraId, horario) || {};
+    const quadras = quadrasReserva || [];
+    return `
+    <div class="modal-bg" data-action="reserva-modal-bg"><div class="modal">
+      <div class="modal-title">Editar reserva</div>
+      <label style="font-size:12px;opacity:.6">Nome</label>
+      <input id="reserva-nome" value="${esc(r.nome || '')}" />
+      <label style="font-size:12px;opacity:.6">Telefone</label>
+      <input id="reserva-telefone" value="${esc(r.telefone || '')}" />
+      <label style="font-size:12px;opacity:.6">Status</label>
+      <select id="reserva-status">
+        <option value="pendente" ${r.status !== 'confirmada' ? 'selected' : ''}>Pendente</option>
+        <option value="confirmada" ${r.status === 'confirmada' ? 'selected' : ''}>Confirmada</option>
+      </select>
+      <label style="font-size:12px;opacity:.6">Quadra</label>
+      <select id="reserva-quadra">
+        ${quadras.map((q) => `<option value="${esc(q.id)}" ${q.id === quadraId ? 'selected' : ''}>${esc(q.nome)}</option>`).join('')}
+      </select>
+      <label style="font-size:12px;opacity:.6">Data</label>
+      <select id="reserva-data">
+        ${datasReserva().map((d) => `<option value="${d}" ${d === data ? 'selected' : ''}>${esc(rotuloDataReserva(d))}</option>`).join('')}
+      </select>
+      <label style="font-size:12px;opacity:.6">Horário</label>
+      <select id="reserva-horario">
+        ${HORARIOS_RESERVA.map((h) => `<option value="${h}" ${h === horario ? 'selected' : ''}>${h}–${fimHorarioReserva(h)}</option>`).join('')}
+      </select>
+      ${reservaErroMsg ? `<div class="hint hint-alerta" style="text-align:left">${esc(reservaErroMsg)}</div>` : ''}
+      <div class="modal-actions"><button data-action="reserva-fechar-modal">Cancelar</button><button class="btn-primary" data-action="reserva-salvar-edicao">Salvar</button></div>
+    </div></div>`;
+  }
+  // modo 'novo'
+  return `
+    <div class="modal-bg" data-action="reserva-modal-bg"><div class="modal">
+      <div class="modal-title">Reservar horário</div>
+      <div class="hint" style="text-align:left;margin-bottom:8px">${esc(tituloSlot)}</div>
+      <label style="font-size:12px;opacity:.6">Nome</label>
+      <input id="reserva-nome" list="atletas-datalist" placeholder="Nome de quem reserva" />
+      <label style="font-size:12px;opacity:.6">Telefone (whatsapp)</label>
+      <input id="reserva-telefone" type="tel" placeholder="Telefone pra contato" />
+      ${isAdmin
+        ? `<label class="checkbox-row"><input type="checkbox" id="reserva-admin-confirmada" /> Já pago / confirmado (pagamento no balcão)</label>`
+        : `<div class="hint" style="text-align:left;margin-top:8px">Depois de reservar aparece a chave Pix pra pagar e anexar o comprovante. A reserva fica pendente até o clube confirmar.</div>`}
+      ${reservaErroMsg ? `<div class="hint hint-alerta" style="text-align:left">${esc(reservaErroMsg)}</div>` : ''}
+      <div class="modal-actions"><button data-action="reserva-fechar-modal">Cancelar</button><button class="btn-primary" data-action="reserva-criar">Reservar</button></div>
+    </div></div>`;
+}
+
+function abrirModalNovaReserva(data, quadraId, horario) {
+  if (slotReservaNoPassado(data, horario)) { alert('Esse horário já passou.'); return; }
+  if (reservaDe(data, quadraId, horario)) { alert('Esse horário acabou de ser reservado.'); render(); return; }
+  reservaModal = { modo: 'novo', data, quadraId, horario };
+  reservaErroMsg = null;
+  reservaFlash = null;
+  render();
+}
+function abrirModalEditarReserva(data, quadraId, horario) {
+  if (!reservaDe(data, quadraId, horario)) return;
+  reservaModal = { modo: 'editar', data, quadraId, horario };
+  reservaErroMsg = null;
+  render();
+}
+function fecharReservaModal() {
+  reservaModal = null;
+  reservaErroMsg = null;
+  reservaEnviandoComprovante = false;
+  render();
+}
+// Cria a reserva. Antes de gravar, checa (com o estado atual em memória, sem transação — mesma
+// simplicidade do resto do app) se o slot já não foi tomado. Cliente cai na tela de pagamento Pix;
+// admin pode marcar "já pago" e sair direto.
+async function criarReservaHandler() {
+  if (!reservaModal) return;
+  const { data, quadraId, horario } = reservaModal;
+  const nome = (document.getElementById('reserva-nome')?.value || '').trim();
+  const telefone = (document.getElementById('reserva-telefone')?.value || '').trim();
+  if (!nome) { reservaErroMsg = 'Preencha o nome.'; render(); return; }
+  if (slotReservaNoPassado(data, horario)) { reservaErroMsg = 'Esse horário já passou.'; render(); return; }
+  if (reservaDe(data, quadraId, horario)) { reservaErroMsg = 'Esse horário acabou de ser reservado por outra pessoa.'; render(); return; }
+  const confirmadaAdmin = isAdmin && !!document.getElementById('reserva-admin-confirmada')?.checked;
+  const reserva = {
+    id: uid() + uid(),
+    nome,
+    telefone,
+    status: confirmadaAdmin ? 'confirmada' : 'pendente',
+    origem: isAdmin ? 'admin' : 'cliente',
+    criadoEm: Date.now(),
+  };
+  try {
+    await set(ref(db, reservaPath(data, quadraId, horario)), reserva);
+  } catch (e) {
+    console.error('Falha ao criar reserva', e);
+    reservaErroMsg = 'Não foi possível reservar agora. Tente de novo.';
+    render();
+    return;
+  }
+  lembrarAtleta(nome, telefone);
+  if (isAdmin) {
+    reservaModal = null;
+    reservaFlash = `Reserva de ${nome} criada — ${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)} ${horario}.`;
+    render();
+    setTimeout(() => { if (reservasView) { reservaFlash = null; render(); } }, 6000);
+  } else {
+    reservaModal = { modo: 'pagamento', data, quadraId, horario, id: reserva.id };
+    reservaErroMsg = null;
+    render();
+  }
+}
+function toggleStatusReservaHandler(data, quadraId, horario) {
+  const r = reservaDe(data, quadraId, horario);
+  if (!r) return;
+  const novo = r.status === 'confirmada' ? 'pendente' : 'confirmada';
+  set(ref(db, reservaPath(data, quadraId, horario)), { ...r, status: novo }).catch((e) => console.error('Falha ao mudar status da reserva', e));
+}
+function cancelarReservaHandler(data, quadraId, horario, nome) {
+  if (!confirm(`Cancelar a reserva${nome ? ` de "${nome}"` : ''} em ${quadraReservaNome(quadraId)} (${rotuloDataReserva(data)} ${horario})? O horário volta a ficar livre.`)) return;
+  set(ref(db, reservaPath(data, quadraId, horario)), null).catch((e) => console.error('Falha ao cancelar reserva', e));
+}
+// Admin: edita nome/telefone/status e, se quiser, move a reserva pra outra quadra/data/horário
+// (grava no novo slot e apaga o antigo). Bloqueia se o slot de destino já estiver ocupado.
+async function salvarEdicaoReservaHandler() {
+  if (!reservaModal) return;
+  const orig = reservaModal;
+  const atual = reservaDe(orig.data, orig.quadraId, orig.horario);
+  if (!atual) { fecharReservaModal(); return; }
+  const nome = (document.getElementById('reserva-nome')?.value || '').trim();
+  const telefone = (document.getElementById('reserva-telefone')?.value || '').trim();
+  const status = document.getElementById('reserva-status')?.value === 'confirmada' ? 'confirmada' : 'pendente';
+  const novaQuadra = document.getElementById('reserva-quadra')?.value || orig.quadraId;
+  const novaData = document.getElementById('reserva-data')?.value || orig.data;
+  const novoHorario = document.getElementById('reserva-horario')?.value || orig.horario;
+  if (!nome) { reservaErroMsg = 'Preencha o nome.'; render(); return; }
+  const mudouSlot = novaQuadra !== orig.quadraId || novaData !== orig.data || novoHorario !== orig.horario;
+  if (mudouSlot && reservaDe(novaData, novaQuadra, novoHorario)) {
+    reservaErroMsg = 'Já existe uma reserva nesse outro horário/quadra.';
+    render();
+    return;
+  }
+  const obj = {
+    ...atual,
+    nome,
+    telefone,
+    status,
+    id: atual.id || (uid() + uid()),
+    origem: atual.origem || 'admin',
+    criadoEm: atual.criadoEm || Date.now(),
+  };
+  try {
+    await set(ref(db, reservaPath(novaData, novaQuadra, novoHorario)), obj);
+    if (mudouSlot) await set(ref(db, reservaPath(orig.data, orig.quadraId, orig.horario)), null);
+  } catch (e) {
+    console.error('Falha ao salvar edição da reserva', e);
+    reservaErroMsg = 'Não foi possível salvar agora. Tente de novo.';
+    render();
+    return;
+  }
+  fecharReservaModal();
+}
+// Comprovante da reserva: base64 num nó separado (comprovantes/reservas/{id}) — mesmo motivo das
+// inscrições, não inflar o listener principal com imagem. Marca a reserva com comprovante:true.
+async function enviarComprovanteReservaHandler(file) {
+  if (!reservaModal || !file) return;
+  const { data, quadraId, horario, id } = reservaModal;
+  const tipoOk = file.type.startsWith('image/') || file.type === 'application/pdf';
+  if (!tipoOk) { reservaErroMsg = 'Envie uma foto/print ou um PDF do comprovante.'; render(); return; }
+  if (file.size > 4 * 1024 * 1024) { reservaErroMsg = 'Arquivo muito grande (máx. 4 MB).'; render(); return; }
+  reservaEnviandoComprovante = true;
+  reservaErroMsg = null;
+  render();
+  try {
+    const arquivo = await comprimirImagemSeForImagem(file);
+    const dataUrl = await arquivoParaDataUrl(arquivo);
+    await set(ref(db, 'comprovantes/reservas/' + id), { dataUrl, contentType: arquivo.type || file.type, enviadoEm: Date.now() });
+    const r = reservaDe(data, quadraId, horario);
+    if (r) await set(ref(db, reservaPath(data, quadraId, horario)), { ...r, comprovante: true, comprovanteEnviadoEm: Date.now() });
+  } catch (e) {
+    console.error('Falha ao enviar comprovante da reserva', e);
+    reservaErroMsg = 'Não foi possível enviar o comprovante agora. Tente de novo.';
+  }
+  reservaEnviandoComprovante = false;
+  render();
+}
+function addQuadraReservaHandler() {
+  const input = document.getElementById('reserva-nova-quadra');
+  const nome = (input?.value || '').trim();
+  if (!nome) return;
+  const nova = [...(quadrasReserva || []), { id: uid(), nome }];
+  set(ref(db, 'config/quadrasReserva'), nova).catch((e) => console.error('Falha ao adicionar quadra de reserva', e));
+}
+function renomearQuadraReservaHandler(id, valor) {
+  const nome = (valor || '').trim();
+  if (!nome) return;
+  const nova = (quadrasReserva || []).map((q) => q.id === id ? { ...q, nome } : q);
+  set(ref(db, 'config/quadrasReserva'), nova).catch((e) => console.error('Falha ao renomear quadra de reserva', e));
+}
+function removerQuadraReservaHandler(id, nome) {
+  if (!confirm(`Remover a quadra "${nome || 'esta quadra'}" da agenda de reservas? Reservas já feitas nela deixam de aparecer na grade (continuam no banco). Não afeta nenhum torneio.`)) return;
+  const nova = (quadrasReserva || []).filter((q) => q.id !== id);
+  set(ref(db, 'config/quadrasReserva'), nova).catch((e) => console.error('Falha ao remover quadra de reserva', e));
 }
 
 render();
