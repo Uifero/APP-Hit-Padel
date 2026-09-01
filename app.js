@@ -5,11 +5,12 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, setPe
 import {
   uid, pairKey, DEFAULT_CAT, CATEGORIA_SUGESTOES, ativosPorRodadaReal, partidaJogada, defaultState,
   categoriaOf, categoriaKeys, scoreGroup, bestPairing, gerarParceriasRoundRobin, particoesEmPares,
-  coberturaDeConfrontos, buscarConfrontosCobrindoTudo, gerarRodadasGarantidas, generateSchedule,
+  coberturaDeConfrontos, buscarConfrontosCobrindoTudo, gerarRodadasGarantidas, gerarRodadasComByesJustos, generateSchedule,
   computeStats, minRoundsForFullCoverage, minRoundsForGamesPerPlayer, distribuicaoEhJusta,
   proximosRoundsValidos, proximoRoundsValidoApartirDe, roundsWithoutScores, generateFinalRound,
   shuffleArr, generateGroups, computeGroupStandings, nextPow2, roundName, seedOrder,
   repairSameGroupClashes, propagateWinner, generateEliminationFromGroups, allGroupMatchesScored,
+  horaParaMinutos, minutosParaHora, ajustarCursorParaPausa, maiorSequenciaSemFolga,
 } from './scheduling.js';
 
 
@@ -43,6 +44,14 @@ function agendarAvisoSeDemorar() {
   timerAvisoDemora = setTimeout(() => {
     avisoDemoraMostrado = true;
     timerAvisoDemora = null;
+    // Sem resposta do Firebase depois de 4s e ninguém logado como admin: tenta a última versão
+    // salva neste aparelho em vez de deixar a jogadora presa no spinner. Só pra visão pública —
+    // admin nunca edita em cima de um estado potencialmente desatualizado (ver persist()/gravação
+    // do cache em carregarTorneioAtual).
+    if (!state && !isAdmin && currentTournamentId) {
+      const cache = lerCacheTorneio(currentTournamentId);
+      if (cache) { state = cache; usandoCacheOffline = true; }
+    }
     render();
   }, 4000);
 }
@@ -51,10 +60,28 @@ function cancelarAvisoDemora() {
   avisoDemoraMostrado = false;
 }
 const AVISO_DEMORA_HTML = '<div class="hint" style="margin-top:10px">Isso está demorando mais que o normal — geralmente é a conexão do aparelho. Continue aguardando ou tente recarregar a página.</div>';
+function torneioCacheKey(tid) { return `hitpadel_cache_${tid}`; }
+function lerCacheTorneio(tid) {
+  try {
+    const raw = localStorage.getItem(torneioCacheKey(tid));
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+// Lembra o que a jogadora digitou em "🔍 Buscar por atleta" (por torneio, neste aparelho) — só
+// pra pré-preencher a busca e personalizar o banner "Próximo jogo" nas próximas visitas. Nunca é
+// usado pra decidir permissão de nada (ex: pagamento), só pra conveniência de exibição.
+function buscaLembradaKey(tid) { return `hitpadel_busca_${tid}`; }
+function lerBuscaLembrada(tid) {
+  try { return localStorage.getItem(buscaLembradaKey(tid)) || ''; } catch (e) { return ''; }
+}
+function lembrarBusca(tid, termo) {
+  try { localStorage.setItem(buscaLembradaKey(tid), termo); } catch (e) { /* localStorage indisponível: só perde a personalização */ }
+}
 let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
 let rodadasEstadoManual = {}; // chave "catKey-ri" -> true (recolhida) / false (aberta), fixado explicitamente ao clicar
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
 let unsubscribeTournament = null;
+let usandoCacheOffline = false; // true quando o estado exibido veio do localStorage (sem sinal), não do Firebase ao vivo
 let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
 let novoTorneioNome = '';
 let tvSlide = 0;
@@ -84,6 +111,17 @@ function getUrlTournamentId() {
 function isModoTV() {
   return new URLSearchParams(window.location.search).get('tv') === '1';
 }
+function getUrlParam(nome) {
+  return new URLSearchParams(window.location.search).get(nome);
+}
+// Reflete categoria/aba selecionadas na URL (replaceState — não polui o histórico a cada clique de
+// aba) pra um link copiado da barra de endereço, ou um F5, cair no mesmo lugar de volta.
+function syncUrlEstadoView() {
+  const url = new URL(window.location.href);
+  if (selectedCategoria) url.searchParams.set('cat', selectedCategoria); else url.searchParams.delete('cat');
+  if (tab && tab !== 'rodadas') url.searchParams.set('tab', tab); else url.searchParams.delete('tab');
+  window.history.replaceState({}, '', url);
+}
 
 function selecionarTorneio(id) {
   currentTournamentId = id;
@@ -97,6 +135,7 @@ function selecionarTorneio(id) {
   pubComprovanteErroMsg = null;
   const url = new URL(window.location.href);
   if (id) url.searchParams.set('t', id); else url.searchParams.delete('t');
+  url.searchParams.delete('cat'); url.searchParams.delete('tab');
   window.history.pushState({}, '', url);
   carregarTorneioAtual();
   render();
@@ -156,11 +195,15 @@ async function toggleNotificacoesHandler() {
 function carregarTorneioAtual() {
   if (unsubscribeTournament) { unsubscribeTournament(); unsubscribeTournament = null; }
   rodadasEstadoManual = {};
+  usandoCacheOffline = false;
   if (!currentTournamentId) { state = null; return; }
-  const r = ref(db, 'torneios/' + currentTournamentId);
+  const tid = currentTournamentId;
+  const r = ref(db, 'torneios/' + tid);
   unsubscribeTournament = onValue(r, (snap) => {
     if (snap.exists()) { state = { ...defaultState(), ...snap.val() }; }
     else { state = defaultState(); set(r, state); }
+    usandoCacheOffline = false;
+    try { localStorage.setItem(torneioCacheKey(tid), JSON.stringify(state)); } catch (e) { /* localStorage cheio/bloqueado: cache offline só não fica disponível, resto do app segue normal */ }
     verificarNovasInscricoes(state);
     render();
   });
@@ -239,9 +282,13 @@ function pixSalvarHandler() {
 }
 
 currentTournamentId = getUrlTournamentId();
+selectedCategoria = getUrlParam('cat') || null;
+tab = getUrlParam('tab') || 'rodadas';
 if (currentTournamentId) carregarTorneioAtual();
 window.addEventListener('popstate', () => {
   currentTournamentId = getUrlTournamentId();
+  selectedCategoria = getUrlParam('cat') || null;
+  tab = getUrlParam('tab') || 'rodadas';
   carregarTorneioAtual();
   render();
 });
@@ -317,6 +364,17 @@ function renderEstadoVazioPublico(catPlayers, catTeams, isChaves) {
   `;
 }
 function renderProximaPartidaPublica(catKey) {
+  const termoLembrado = currentTournamentId ? lerBuscaLembrada(currentTournamentId) : '';
+  const meuJogo = meuProximoJogo(catKey, termoLembrado);
+  if (meuJogo) {
+    return `
+      <div class="proxima-banner">
+        <div class="proxima-banner-label">🎾 Seu próximo jogo</div>
+        <div class="proxima-banner-info">${formatData(meuJogo.data)} às ${esc(meuJogo.hora)}</div>
+        <div class="proxima-banner-jogo">${esc(meuJogo.a)} <span class="vs-inline">×</span> ${esc(meuJogo.b)}</div>
+      </div>
+    `;
+  }
   const resumo = resumoVisaoGeral(catKey);
   if (!resumo.proxima && !resumo.ultimoResultado) return '';
   return `
@@ -375,6 +433,7 @@ function render() {
       </div>
     </header>
     <main class="hp-main">
+      ${usandoCacheOffline ? `<div class="alerta-atraso">📡 Sem conexão agora — mostrando a última versão salva neste aparelho. Atualiza sozinho assim que a internet voltar.</div>` : ''}
       ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams) : ''}
       ${ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
       ${!isAdmin && (catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
@@ -783,9 +842,10 @@ function renderInscritosPublico(catKey) {
     </section>`;
 }
 function renderBuscaAtleta() {
+  const termoLembrado = !isAdmin && currentTournamentId ? lerBuscaLembrada(currentTournamentId) : '';
   return isAdmin
     ? `<div class="field search-field"><input id="busca-atleta" placeholder="🔍 Buscar por atleta ou dupla..." /></div>`
-    : `<div class="field search-field search-field-destaque"><label>🔍 Digite seu nome pra encontrar sua partida</label><input id="busca-atleta" placeholder="Seu nome ou o da sua dupla..." /></div>`;
+    : `<div class="field search-field search-field-destaque"><label>🔍 Digite seu nome pra encontrar sua partida</label><input id="busca-atleta" placeholder="Seu nome ou o da sua dupla..." value="${esc(termoLembrado)}" /></div>`;
 }
 function renderCategoriaTabs(catKeys, current) {
   return `<div class="tabs cat-tabs">
@@ -811,6 +871,22 @@ function renderGerarHorariosPanel(catKey) {
       </div>
     </div>`;
 }
+// Aviso pós-sorteio (não bloqueia nada): quando não dá pra manter no máximo LIMITE_DESCANSO jogos
+// seguidos sem folga pra todo mundo — mesmo depois do reordenarPorDescanso (scheduling.js) já ter
+// tentado espalhar as folgas ao máximo — avisa quem ficou no limite e sugere a troca manual de
+// rodada que já existe (🔁 Trocar essa rodada com outra) pra quem quiser tentar ajustar na mão.
+const LIMITE_DESCANSO = 4;
+function renderAvisoDescanso(catRounds, catPlayers) {
+  if (!isAdmin) return '';
+  const rodadasNormais = catRounds.filter((r) => !r.isFinal);
+  if (rodadasNormais.length <= LIMITE_DESCANSO) return '';
+  const { maxSequencia, jogadorasNoLimite } = maiorSequenciaSemFolga(rodadasNormais, catPlayers.map((p) => p.id));
+  if (maxSequencia <= LIMITE_DESCANSO) return '';
+  const nomes = jogadorasNoLimite.slice(0, 3).map(nameOf).map(esc).join(', ');
+  const resto = jogadorasNoLimite.length > 3 ? ` e mais ${jogadorasNoLimite.length - 3}` : '';
+  const verbo = jogadorasNoLimite.length > 1 ? 'vão jogar' : 'vai jogar';
+  return `<div class="hint hint-alerta" style="text-align:left;margin-bottom:10px">⚠ ${nomes}${resto} ${verbo} ${maxSequencia} rodadas seguidas sem folga — já tentamos espalhar as folgas ao máximo, mas com ${state.numCourts} quadra(s) e essa quantidade de jogadoras não dá pra descer de ${maxSequencia}. Se quiser tentar melhorar na mão, use "🔁 Trocar essa rodada com outra" na lista abaixo.</div>`;
+}
 function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
   if (!catRounds.length) return '';
   const podeGerarFinal = state.tipo === 'mini' && !catRounds.some((r) => r.isFinal) && catRounds.length > 0 && !roundsWithoutScores(catRounds) && catPlayers.length >= 4;
@@ -821,7 +897,7 @@ function renderAmericanoView(catRounds, stats, catPlayers, catKey) {
       <button class="tab ${tab === 'aovivo' ? 'active' : ''}" data-action="tab" data-tab="aovivo">Ao Vivo</button>
     </div>
     ${isAdmin && podeGerarFinal ? `<button class="btn-primary" style="margin-bottom:14px" data-action="gerar-final">🏆 Gerar final (top 4)</button>` : ''}
-    ${tab === 'rodadas' ? renderGerarHorariosPanel(catKey) + renderRounds(catRounds, catKey) : ''}
+    ${tab === 'rodadas' ? renderAvisoDescanso(catRounds, catPlayers) + renderGerarHorariosPanel(catKey) + renderRounds(catRounds, catKey) : ''}
     ${tab === 'ranking' ? renderRanking(stats) : ''}
     ${tab === 'aovivo' ? renderAoVivoModulo(catKey) : ''}
   `;
@@ -845,6 +921,21 @@ function resumoVisaoGeral(catKey) {
   jogadosComHorario.sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora));
   const atrasadas = items.filter((it) => !partidaJogada(it) && it.data && it.hora && (it.data < hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) < agoraMin)));
   return { total, jogados, pendentes, proxima: futuros[0] || null, ultimoResultado: jogadosComHorario[0] || null, atrasadas: atrasadas.length };
+}
+// Mesmo filtro de "próxima" do resumoVisaoGeral, mas restrito aos jogos que citam o termo buscado
+// (nome da jogadora/dupla) — usado pra personalizar o banner público assim que alguém já buscou o
+// próprio nome uma vez (busca fica lembrada neste aparelho, ver lerBuscaLembrada).
+function meuProximoJogo(catKey, termo) {
+  const t = (termo || '').trim().toLowerCase();
+  if (!t) return null;
+  const items = collectJogos(catKey).filter((it) => `${it.a} ${it.b}`.toLowerCase().includes(t));
+  if (!items.length) return null;
+  const hoje = hojeISO();
+  const agora = new Date();
+  const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+  const futuros = items.filter((it) => !partidaJogada(it) && it.data && it.hora && (it.data > hoje || (it.data === hoje && (it.hora.split(':').map(Number)[0] * 60 + it.hora.split(':').map(Number)[1]) >= agoraMin)));
+  futuros.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
+  return futuros[0] || null;
 }
 function statusQuadrasAoVivo(catKey) {
   const items = collectJogos(catKey);
@@ -993,14 +1084,21 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
         <div class="visaogeral-item"><div class="visaogeral-num">${resumo.pendentes}</div><div class="visaogeral-label">Pendentes</div></div>
       </div>
       ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
-      <button class="mode-btn" style="width:100%;margin-top:10px" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
-      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
     </div>
   </section>
   <section class="card cta-card">
     <div class="card-body">
       <button class="btn-primary" style="width:100%" data-action="${state.tipo === 'chaves' ? 'gerar-grupos' : 'sortear'}">🔀 ${naoGerouAinda ? (state.tipo === 'chaves' ? 'Gerar chaves' : 'Sortear rodadas') : (state.tipo === 'chaves' ? 'Gerar chaves novamente' : 'Sortear novamente')}</button>
       <div class="hint" style="text-align:left;margin-top:6px">${naoGerouAinda ? `Cadastre as ${state.tipo === 'chaves' ? 'duplas' : 'jogadoras'} em "Inscrições" antes de sortear.` : 'Pode sortear quantas vezes quiser — cada vez gera uma combinação nova. Isso apaga os placares já lançados.'}</div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-head-static">📲 Compartilhar</div>
+    <div class="card-body">
+      <button class="mode-btn" style="width:100%" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="mostrar-qr">🔗 Gerar QR Code do torneio</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="exportar-pdf">🖨️ Exportar agenda/placar em PDF</button>
     </div>
   </section>
   <section class="card">
@@ -1110,26 +1208,99 @@ function renderConfigModulo() {
   `;
 }
 
+// Pra múltiplo de 4 (e número par), a construção garantida (gerarRodadasComByesJustos, ver
+// scheduling.js) cobre cada dupla exatamente 1 vez com jogos iguais num número fixo de rodadas.
+// Devolve null quando essa construção não se aplica (ímpar, <4, ou "chaves").
+function rodadasExatasGarantidas(numJogadoras, numCourts) {
+  const numeroImpar = numJogadoras % 2 === 1;
+  if (state.tipo === 'chaves' || numJogadoras < 4 || numeroImpar || numJogadoras % 4 !== 0) return null;
+  return gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), numCourts).length;
+}
+// A fórmula distribuicaoEhJusta assume rodadas todas do mesmo tamanho — vale pro sorteio heurístico
+// de sempre, mas não pra construção garantida (que tem rodadas de tamanho variável, pra caber nas
+// quadras). Essa função sabe reconhecer os dois casos, pra nunca dar uma resposta diferente na tela
+// de "Quadras e Rodadas" e no botão de sortear (foi exatamente essa divergência que já apareceu 2
+// vezes: um aviso de "não é justo" embaixo de um botão dizendo "jogos iguais pra todas", e depois um
+// alert de bloqueio no sorteio pro mesmo número de rodadas que o botão tinha acabado de preencher).
+function distribuicaoRodadasEhJustaComExato(numJogadoras, numCourts, numRounds, rodadasExatas) {
+  if (rodadasExatas == null) return distribuicaoEhJusta(numJogadoras, numCourts, numRounds);
+  if (numRounds === rodadasExatas) return true;
+  if (numRounds > rodadasExatas) return distribuicaoEhJusta(numJogadoras, numCourts, numRounds - rodadasExatas);
+  return distribuicaoEhJusta(numJogadoras, numCourts, numRounds);
+}
+function distribuicaoRodadasEhJusta(numJogadoras, numCourts, numRounds) {
+  return distribuicaoRodadasEhJustaComExato(numJogadoras, numCourts, numRounds, rodadasExatasGarantidas(numJogadoras, numCourts));
+}
+// Mesma lista que proximosRoundsValidos, mas ciente da construção garantida (inclui o número exato
+// dela e os excedentes que também ficam justos por cima, além dos valores puramente heurísticos).
+function proximasRodadasJustasReais(numJogadoras, numCourts, quantidade = 6, maxRounds = 60) {
+  const rodadasExatas = rodadasExatasGarantidas(numJogadoras, numCourts);
+  const validos = [];
+  for (let n = 1; n <= maxRounds && validos.length < quantidade; n++) {
+    if (distribuicaoRodadasEhJustaComExato(numJogadoras, numCourts, n, rodadasExatas)) validos.push(n);
+  }
+  return validos;
+}
+
 function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
   const cortesReais = Math.min(state.numCourts, maxCourts);
-  const justa = state.tipo !== 'chaves' && numJogadoras >= 4 ? distribuicaoEhJusta(numJogadoras, cortesReais, state.numRounds) : true;
   const numeroImpar = numJogadoras % 2 === 1;
+  const multiploDe4 = state.tipo !== 'chaves' && numJogadoras >= 4 && !numeroImpar && numJogadoras % 4 === 0;
+  // Pra múltiplo de 4, dá pra garantir cada dupla EXATAMENTE 1 vez (nem mais, nem menos) — usa o
+  // tamanho real de gerarRodadasComByesJustos (a mesma construção que generateSchedule de fato usa
+  // nesse caso) em vez de uma fórmula separada, pra o número mostrado aqui nunca desalinhar do que
+  // o sorteio de rodadas realmente vai gerar. Pra quantidade que não é múltiplo de 4, só dá pra
+  // garantir jogos iguais (não zero repetição), então usa proximoRoundsValidoApartirDe.
+  const rodadasExatas = multiploDe4
+    ? rodadasExatasGarantidas(numJogadoras, cortesReais)
+    : (state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 && !numeroImpar ? proximoRoundsValidoApartirDe(numJogadoras, cortesReais, minRounds) : null);
+  const justa = state.tipo !== 'chaves' && numJogadoras >= 4 ? distribuicaoRodadasEhJusta(numJogadoras, cortesReais, state.numRounds) : true;
+  const mostrarAvisosDuplas = state.tipo !== 'chaves' && numJogadoras >= 4;
+  const totalDuplas = numJogadoras * (numJogadoras - 1) / 2;
+  // Parâmetro 2 (todos jogam de dupla com todos / nunca repetir dupla), sempre avaliado contra o
+  // state.numRounds ATUAL — pra múltiplo de 4 o teto é exato e garantido (mesma rodadasExatas de
+  // cima: abaixo dela ninguém repetiu ainda mas também não fechou cobertura total; acima dela,
+  // repetição já é matematicamente inevitável). Pros demais tamanhos só existe uma estimativa
+  // (mínimo pra cobrir todo mundo), porque esses caem no sorteio heurístico, que minimiza repetição
+  // mas não garante zero — por isso o texto nunca promete "exatamente" fora do caso múltiplo de 4.
+  let coberturaOk = null, coberturaMsg = '';
+  if (mostrarAvisosDuplas) {
+    if (numeroImpar) {
+      coberturaOk = false;
+      coberturaMsg = 'Com número ímpar de jogadoras, não dá pra garantir que todas joguem de dupla com todas sem exigir rodadas demais. Use "jogos por jogadora" abaixo pra achar o melhor equilíbrio.';
+    } else if (multiploDe4 && rodadasExatas != null) {
+      if (state.numRounds < rodadasExatas) { coberturaOk = false; coberturaMsg = `Com ${state.numRounds} rodada(s), ainda faltam ${rodadasExatas - state.numRounds} rodada(s) pra todas jogarem de dupla com todas (o número exato é ${rodadasExatas}).`; }
+      else if (state.numRounds === rodadasExatas) { coberturaOk = true; coberturaMsg = `Com ${state.numRounds} rodada(s), todas jogam de dupla com todas exatamente 1 vez — nenhuma dupla se repete.`; }
+      else { coberturaOk = false; coberturaMsg = `Com ${state.numRounds} rodada(s), a partir da rodada ${rodadasExatas + 1} as duplas começam a se repetir (o máximo sem repetir nenhuma é ${rodadasExatas}).`; }
+    } else if (minRounds > 0) {
+      coberturaOk = state.numRounds >= minRounds;
+      coberturaMsg = coberturaOk
+        ? `Com ${state.numRounds} rodada(s), todas já devem ter jogado de dupla com quase todas (estimativa — esse total de jogadoras não tem um número exato garantido contra repetição, só o sorteio tentando ao máximo evitar).`
+        : `Com ${state.numRounds} rodada(s), ainda não dá pra todas jogarem de dupla com todas pelo menos 1 vez — são necessárias pelo menos ${minRounds} rodadas (estimativa).`;
+    }
+  }
   return `
     <div class="row2">
       <div class="field"><label>Quadras (máx ${maxCourts})</label><input type="number" min="1" max="${maxCourts}" id="num-courts" value="${state.numCourts}" data-action="set-courts" /></div>
       <div class="field"><label>Rodadas</label><input type="number" min="1" max="60" id="num-rounds" value="${state.numRounds}" data-action="set-rounds" /></div>
     </div>
+    ${mostrarAvisosDuplas ? `<div class="hint" style="text-align:left;margin-top:-8px">Com ${numJogadoras} jogadoras, existem ${totalDuplas} duplas diferentes possíveis.</div>` : ''}
     ${state.tipo !== 'chaves' && numJogadoras >= 4 ? `
-      <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:-8px;margin-bottom:10px">
-        ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas.${numeroImpar ? ' Com número ímpar de jogadoras, use o campo "jogos por jogadora" abaixo, que calcula um número de rodadas que funciona automaticamente.' : ` Números que funcionam: ${proximosRoundsValidos(numJogadoras, cortesReais).join(', ')}.`}`}
+      <div class="hint ${justa ? '' : 'hint-alerta'}" style="text-align:left;margin-top:4px;margin-bottom:4px">
+        ${justa ? `✓ Com ${state.numRounds} rodada(s), todas as ${numJogadoras} jogadoras jogam a mesma quantidade de jogos.` : `⚠ Com ${state.numRounds} rodada(s), NÃO dá pra deixar os jogos iguais pra todas.${numeroImpar ? ' Com número ímpar de jogadoras, use o campo "jogos por jogadora" abaixo, que calcula um número de rodadas que funciona automaticamente.' : ` Números que funcionam: ${proximasRodadasJustasReais(numJogadoras, cortesReais).join(', ')}.`}`}
       </div>
     ` : ''}
-    ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 ? (numeroImpar ? `
-      <div class="hint" style="text-align:left;margin-top:4px">Com número ímpar de jogadoras, "todos contra todos" não é uma opção prática (exigiria rodadas demais). Use o campo "jogos por jogadora" abaixo.</div>
-    ` : `
-      <button class="mode-btn" data-action="usar-cobertura-total" data-min="${minRounds}">Preencher com ~${minRounds} rodadas (todos jogam com todos)</button>
-      <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), seriam necessárias ~${minRounds} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez.</div>
-    `) : ''}
+    ${coberturaMsg ? `<div class="hint ${coberturaOk === false ? 'hint-alerta' : ''}" style="text-align:left;margin-bottom:10px">${coberturaOk === false ? '⚠' : coberturaOk === true ? '✓' : 'ℹ'} ${coberturaMsg}</div>` : ''}
+    ${state.tipo !== 'chaves' && minRounds > 0 && numJogadoras >= 4 && !numeroImpar ? (() => {
+      const precisouAjustar = rodadasExatas > minRounds;
+      const rotulo = multiploDe4 ? 'todos jogam com todos exatamente 1 vez, jogos iguais pra todas' : 'todos jogam com todos, jogos iguais pra todas';
+      const explicacao = multiploDe4
+        ? `são necessárias exatamente ${rodadasExatas} rodadas pra garantir que cada dupla de jogadoras aconteça exatamente 1 vez — nem mais, nem menos — com jogos e folgas idênticos pra todas`
+        : `são necessárias exatamente ${rodadasExatas} rodadas pra garantir que todo mundo jogue com todo mundo pelo menos 1 vez e que todas joguem a mesma quantidade de jogos${precisouAjustar ? ` (${minRounds} já cobririam todo mundo, mas só a partir de ${rodadasExatas} a quantidade de jogos fica igual pra todas)` : ''}`;
+      return `
+      <button class="mode-btn" data-action="usar-cobertura-total" data-min="${rodadasExatas}">Preencher com ${rodadasExatas} rodadas (${rotulo})</button>
+      <div class="hint" style="text-align:left;margin-top:4px">Com as jogadoras confirmadas na categoria atual e ${state.numCourts} quadra(s), ${explicacao}.</div>
+    `; })() : ''}
     ${state.tipo !== 'chaves' ? `
       <div class="field" style="margin-top:10px">
         <label>Ou escolha quantos jogos cada jogadora deve jogar</label>
@@ -1151,6 +1322,11 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
       <div class="field"><label>Duração de cada jogo (min)</label><input type="number" min="1" id="duracao-jogo-min" value="${state.duracaoJogoMin}" data-action="set-duracao-jogo-min" /></div>
     </div>
     <div class="hint" style="text-align:left">Preenchidos junto com a Data de início (na Configuração), os horários de todos os jogos são gerados automaticamente assim que você sortear as rodadas ou gerar as chaves — sem precisar entrar na aba Jogos depois.</div>
+    <div class="row2">
+      <div class="field"><label>Início da pausa (opcional)</label><input type="time" id="pausa-inicio" value="${esc(state.pausaInicio || '')}" data-action="set-pausa-inicio" /></div>
+      <div class="field"><label>Volta dos jogos após a pausa</label><input type="time" id="pausa-fim" value="${esc(state.pausaFim || '')}" data-action="set-pausa-fim" /></div>
+    </div>
+    <div class="hint" style="text-align:left">Se algum jogo cair dentro desse intervalo (ex: almoço, troca de turno), ele e os jogos seguintes são empurrados pra começar só a partir da hora de volta.</div>
   `;
 }
 
@@ -1338,7 +1514,7 @@ function renderRounds(catRounds, catKey) {
     ${catRounds.map((rd, ri) => {
       const chave = `${catKey}-${ri}`;
       const todasJogadas = rd.matches.every((m) => partidaJogada(m));
-      const recolhida = chave in rodadasEstadoManual ? rodadasEstadoManual[chave] : (!isAdmin && todasJogadas);
+      const recolhida = chave in rodadasEstadoManual ? rodadasEstadoManual[chave] : todasJogadas;
       const jogadasCount = rd.matches.filter((m) => partidaJogada(m)).length;
       const trocaSelecionada = rodadaSelecionadaParaTroca && rodadaSelecionadaParaTroca.catKey === catKey && rodadaSelecionadaParaTroca.indice === ri;
       return `
@@ -1364,6 +1540,17 @@ function renderScoreStepper(matchId, side, value, actionPrefix = 'score') {
     <button type="button" class="score-btn" data-action="${actionPrefix}-inc" data-match="${matchId}" data-side="${side}">+</button>
   </div>`;
 }
+// Mesma janela de "em andamento" do módulo Ao Vivo (statusQuadrasAoVivo: começou e ainda não faz 60min)
+// — repetida aqui pra marcar o próprio card na lista de Rodadas, sem precisar trocar de aba pra ver.
+function partidaAoVivoAgora(m, ag) {
+  if (partidaJogada(m) || !ag.data || !ag.hora) return false;
+  if (ag.data !== hojeISO()) return false;
+  const [h, mi] = ag.hora.split(':').map(Number);
+  const inicioMin = h * 60 + mi;
+  const agora = new Date();
+  const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+  return agoraMin >= inicioMin && agoraMin < inicioMin + 60;
+}
 function renderMatch(m, ri) {
   const d = drafts[m.id] || { a: m.scoreA ?? '', b: m.scoreB ?? '' };
   const done = partidaJogada(m);
@@ -1373,7 +1560,7 @@ function renderMatch(m, ri) {
   const selecionado = jogoSelecionadoParaTroca === m.id;
   return `
   <div class="match ${selecionado ? 'match-selecionado-troca' : ''}">
-    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${ag.data ? `<span class="jogo-hora">🕐 ${formatData(ag.data)} ${esc(ag.hora || '')}</span>` : ''}${done && !editing ? '<span class="check">✓</span>' : ''}</div>
+    <div class="match-head"><span class="court-tag">${esc(quadraNome(state, m.court))}</span>${partidaAoVivoAgora(m, ag) ? '<span class="tag-ao-vivo">🟢 ao vivo</span>' : ''}${ag.data ? `<span class="jogo-hora">🕐 ${formatData(ag.data)} ${esc(ag.hora || '')}</span>` : ''}${done && !editing ? '<span class="check">✓</span>' : ''}</div>
     <div class="team-row">
       <span class="team-name">${m.teamA.map(nameOf).map(esc).join(' + ')}</span>
       ${showInputs ? renderScoreStepper(m.id, 'a', d.a) : `<span class="score">${m.scoreA ?? '–'}</span>`}
@@ -1685,6 +1872,8 @@ function bindEvents() {
     if (action === 'abrir-modo-tv') el.addEventListener('click', () => {
       window.open(`${window.location.origin}${window.location.pathname}?t=${currentTournamentId}&tv=1`, '_blank');
     });
+    if (action === 'mostrar-qr') el.addEventListener('click', mostrarQrHandler);
+    if (action === 'exportar-pdf') el.addEventListener('click', () => exportarPdfHandler(currentCategoria()));
     if (action === 'toggle-rodada') el.addEventListener('click', () => {
       const chave = el.dataset.chave;
       const atualRecolhida = el.dataset.recolhida === '1';
@@ -1700,7 +1889,7 @@ function bindEvents() {
     if (action === 'toggle-notificacoes') el.addEventListener('click', toggleNotificacoesHandler);
     if (action === 'set-data-inicio') el.addEventListener('change', () => persist({ ...state, dataInicio: el.value }));
     if (action === 'set-data-fim') el.addEventListener('change', () => persist({ ...state, dataFim: el.value }));
-    if (action === 'sel-cat') el.addEventListener('click', () => { selectedCategoria = el.dataset.cat; tab = 'rodadas'; render(); });
+    if (action === 'sel-cat') el.addEventListener('click', () => { selectedCategoria = el.dataset.cat; tab = 'rodadas'; syncUrlEstadoView(); render(); });
     if (action === 'jogos-filtro-data') el.addEventListener('click', () => { jogosFiltroData = el.dataset.data; render(); });
     if (action === 'gerar-horarios') el.addEventListener('click', () => gerarHorariosHandler(el.dataset.cat));
     if (action === 'add-cat') el.addEventListener('click', addCategoriaHandler);
@@ -1750,7 +1939,13 @@ function bindEvents() {
       const catKey = currentCategoria();
       const numJogadoras = state.players.filter((p) => categoriaOf(p) === catKey).length;
       const minimo = Number(el.dataset.min);
-      const rodadas = proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
+      // Múltiplo de 4: o número exato já vem pronto de gerarRodadasComByesJustos (mesma construção
+      // que generateSchedule usa de fato — ver scheduling.js), não passa por proximoRoundsValidoApartirDe,
+      // que usa uma fórmula de "jogos iguais" diferente e pode divergir (ex.: 20 jogadoras/2 quadras:
+      // a construção real precisa de 49 rodadas, mas essa fórmula "arredondaria" pra 50).
+      const rodadas = numJogadoras % 4 === 0
+        ? gerarRodadasComByesJustos(Array.from({ length: numJogadoras }, (_, i) => ({ id: 'x' + i })), state.numCourts).length
+        : proximoRoundsValidoApartirDe(numJogadoras, state.numCourts, minimo);
       persist({ ...state, numRounds: Math.min(60, rodadas) });
     });
     if (action === 'calcular-rodadas-por-jogos') el.addEventListener('click', () => {
@@ -1766,10 +1961,12 @@ function bindEvents() {
     });
     if (action === 'set-hora-inicio-torneio') el.addEventListener('change', () => persist({ ...state, horaInicioTorneio: el.value }));
     if (action === 'set-duracao-jogo-min') el.addEventListener('change', () => persist({ ...state, duracaoJogoMin: Math.max(1, Number(el.value) || 40) }));
+    if (action === 'set-pausa-inicio') el.addEventListener('change', () => persist({ ...state, pausaInicio: el.value }));
+    if (action === 'set-pausa-fim') el.addEventListener('change', () => persist({ ...state, pausaFim: el.value }));
     if (action === 'sortear') el.addEventListener('click', sortearHandler);
     if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
-    if (action === 'tab') el.addEventListener('click', () => { tab = el.dataset.tab; render(); });
+    if (action === 'tab') el.addEventListener('click', () => { tab = el.dataset.tab; syncUrlEstadoView(); render(); });
     if (['score-a', 'score-b', 'gscore-a', 'gscore-b', 'bscore-a', 'bscore-b'].includes(action)) {
       el.addEventListener('input', () => {
         const id = el.dataset.match;
@@ -1816,8 +2013,7 @@ function bindEvents() {
     document.getElementById(id)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') pubAddTeamHandler(); });
   });
   const buscaInput = document.getElementById('busca-atleta');
-  if (buscaInput) buscaInput.addEventListener('input', () => {
-    const termo = buscaInput.value.trim().toLowerCase();
+  function aplicarFiltroBusca(termo) {
     document.querySelectorAll('.round-block').forEach((block) => {
       let algumVisivel = false;
       const naChave = new Set(block.querySelectorAll('.bracket-matches .match'));
@@ -1835,7 +2031,17 @@ function bindEvents() {
       });
       block.style.display = algumVisivel ? '' : 'none';
     });
-  });
+  }
+  if (buscaInput) {
+    aplicarFiltroBusca(buscaInput.value.trim().toLowerCase());
+    buscaInput.addEventListener('input', () => {
+      const termo = buscaInput.value.trim().toLowerCase();
+      // Guarda o termo pra próxima visita (só na visão pública — personaliza o banner "Seu próximo
+      // jogo"). Admin usa a mesma busca só como filtro de tela, sem intenção de "esse sou eu".
+      if (!isAdmin && currentTournamentId) lembrarBusca(currentTournamentId, termo);
+      aplicarFiltroBusca(termo);
+    });
+  }
   const newCatInput = document.getElementById('new-cat');
   if (newCatInput) newCatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCategoriaHandler(); });
   const lobbyBuscaInput = document.getElementById('lobby-busca');
@@ -1883,6 +2089,63 @@ function compartilharTorneioHandler() {
   const link = `${window.location.origin}${window.location.pathname}?t=${currentTournamentId}`;
   const mensagem = `🎾 ${state.name}\nAcompanhe rodadas, ranking e resultados ao vivo, direto do celular:\n${link}`;
   window.open(`https://wa.me/?text=${encodeURIComponent(mensagem)}`, '_blank');
+}
+// Gera a imagem do QR num serviço externo (api.qrserver.com) — o link em si já é público (mesmo que
+// o botão "Compartilhar no WhatsApp" manda pra fora), então não há dado sensível envolvido.
+function renderQrModal(link) {
+  const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data=${encodeURIComponent(link)}`;
+  return `<div class="modal-bg" data-action="close-pin-bg"><div class="modal" data-action="stop-bubble">
+    <div class="modal-title">QR Code do torneio</div>
+    <img src="${qrSrc}" alt="QR Code do link do torneio" style="display:block;width:100%;max-width:260px;margin:0 auto 12px;border-radius:12px;background:#fff;padding:10px" />
+    <div class="hint" style="margin-bottom:10px">Aponte a câmera do celular pra abrir o torneio direto.</div>
+    <div class="modal-actions"><button class="btn-primary" data-action="close-pin" style="width:100%">Fechar</button></div>
+  </div></div>`;
+}
+function mostrarQrHandler() {
+  if (!currentTournamentId) return;
+  if (!state.visivelPublico) {
+    if (!confirm('Esse torneio ainda está oculto pro público — quem escanear vai ver "não disponível". Publicar agora?')) return;
+    persist({ ...state, visivelPublico: true });
+  }
+  const link = `${window.location.origin}${window.location.pathname}?t=${currentTournamentId}`;
+  document.getElementById('pin-modal-slot').innerHTML = renderQrModal(link);
+  document.querySelector('[data-action="close-pin-bg"]')?.addEventListener('click', closePinModal);
+  document.querySelector('[data-action="stop-bubble"]')?.addEventListener('click', (e) => e.stopPropagation());
+  document.querySelector('[data-action="close-pin"]')?.addEventListener('click', closePinModal);
+}
+// Exportação em PDF via impressão do navegador (Salvar como PDF) em vez de biblioteca externa —
+// sem dependência nova pra manter, funciona offline e o usuário já conhece o fluxo "imprimir".
+// Escreve num #print-area fixo (fora do #root) pra não mexer no ciclo normal de render/state.
+function renderAgendaImprimivel(catKey) {
+  const items = collectJogos(catKey).slice().sort((x, y) => {
+    const dx = x.data || '9999-99-99', dy = y.data || '9999-99-99';
+    if (dx !== dy) return dx < dy ? -1 : 1;
+    const hx = x.hora || '99:99', hy = y.hora || '99:99';
+    return hx < hy ? -1 : hx > hy ? 1 : 0;
+  });
+  const catTxt = catKey === DEFAULT_CAT ? '' : ` — ${catLabel(catKey)}`;
+  const linhas = items.map((it) => `
+    <tr>
+      <td>${esc(it.fase)}</td>
+      <td>${it.data ? formatData(it.data) : '—'}</td>
+      <td>${it.hora || '—'}</td>
+      <td>${esc(it.a)}</td>
+      <td>${esc(it.b)}</td>
+      <td>${it.scoreA != null && it.scoreB != null ? `${it.scoreA} x ${it.scoreB}` : '—'}</td>
+    </tr>`).join('');
+  return `
+    <h1>${esc(state.name)}${esc(catTxt)}</h1>
+    <div class="print-sub">Agenda e resultados — gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <table class="print-table">
+      <thead><tr><th>Fase</th><th>Data</th><th>Hora</th><th>Dupla A</th><th>Dupla B</th><th>Placar</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="6">Nenhum jogo gerado ainda.</td></tr>'}</tbody>
+    </table>`;
+}
+function exportarPdfHandler(catKey) {
+  const area = document.getElementById('print-area');
+  if (!area) return;
+  area.innerHTML = renderAgendaImprimivel(catKey);
+  window.print();
 }
 
 async function tryUnlock() {
@@ -2198,28 +2461,32 @@ function pubDeclararPagoHandler(list, id) {
   const key = list === 'players' ? 'players' : 'teams';
   persist({ ...state, [key]: state[key].map((x) => x.id === id ? { ...x, statusPagamento: 'aguardando_confirmacao' } : x) });
 }
-function agendamentosAutoParaRounds(roundsPorCategoria, dataInput, horaInput, duracao, agendamentosBase) {
+function agendamentosAutoParaRounds(roundsPorCategoria, dataInput, horaInput, duracao, agendamentosBase, pausaInicio, pausaFim) {
   const agendamentos = { ...agendamentosBase };
+  const pausaInicioMin = pausaInicio ? horaParaMinutos(pausaInicio) : null;
+  const pausaFimMin = pausaFim ? horaParaMinutos(pausaFim) : null;
   Object.values(roundsPorCategoria).forEach((catRounds) => {
-    const [h, m] = horaInput.split(':').map(Number);
-    let cursorMin = h * 60 + m;
+    let cursorMin = horaParaMinutos(horaInput);
     catRounds.forEach((rd) => {
-      const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+      cursorMin = ajustarCursorParaPausa(cursorMin, pausaInicioMin, pausaFimMin);
+      const horaStr = minutosParaHora(cursorMin);
       rd.matches.forEach((m2) => { agendamentos[m2.id] = { data: dataInput, hora: horaStr }; });
       cursorMin += duracao;
     });
   });
   return agendamentos;
 }
-function agendamentosAutoParaGrupos(novosGrupos, dataInput, horaInput, duracao, agendamentosBase) {
+function agendamentosAutoParaGrupos(novosGrupos, dataInput, horaInput, duracao, agendamentosBase, pausaInicio, pausaFim) {
   const agendamentos = { ...agendamentosBase };
+  const pausaInicioMin = pausaInicio ? horaParaMinutos(pausaInicio) : null;
+  const pausaFimMin = pausaFim ? horaParaMinutos(pausaFim) : null;
   const porCategoria = {};
   novosGrupos.forEach((g) => { (porCategoria[g.categoria] ||= []).push(g); });
   Object.values(porCategoria).forEach((grupos) => {
-    const [h, m] = horaInput.split(':').map(Number);
-    let cursorMin = h * 60 + m;
+    let cursorMin = horaParaMinutos(horaInput);
     grupos.forEach((g) => {
-      const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+      cursorMin = ajustarCursorParaPausa(cursorMin, pausaInicioMin, pausaFimMin);
+      const horaStr = minutosParaHora(cursorMin);
       g.matches.forEach((m2) => { agendamentos[m2.id] = { data: dataInput, hora: horaStr }; });
       cursorMin += duracao;
     });
@@ -2232,12 +2499,12 @@ function sortearHandler() {
     if (catPlayers.length < 4) continue;
     const maxCourts = Math.max(1, Math.floor(catPlayers.length / 4));
     const courtsReais = Math.min(state.numCourts, maxCourts);
-    if (!distribuicaoEhJusta(catPlayers.length, courtsReais, state.numRounds)) {
+    if (!distribuicaoRodadasEhJusta(catPlayers.length, courtsReais, state.numRounds)) {
       const catLabelTxt = catKey === DEFAULT_CAT ? '' : ` na categoria "${catLabel(catKey)}"`;
       const numeroImpar = catPlayers.length % 2 === 1;
       const sugestao = numeroImpar
         ? 'Com número ímpar de jogadoras, não dá pra sortear direto com esse número de rodadas. Use o campo "quantos jogos cada jogadora deve jogar" (em Quadras e Rodadas) — ele calcula e preenche um número de rodadas que funciona automaticamente.'
-        : `Rodadas que resultam em jogos 100% iguais pra todas: ${proximosRoundsValidos(catPlayers.length, courtsReais).join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`;
+        : `Rodadas que resultam em jogos 100% iguais pra todas: ${proximasRodadasJustasReais(catPlayers.length, courtsReais).join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`;
       alert(`Com ${catPlayers.length} jogadoras${catLabelTxt} e ${courtsReais} quadra(s), ${state.numRounds} rodada(s) NÃO permite que todas joguem exatamente a mesma quantidade de jogos — alguém jogaria a mais e alguém a menos.\n\n${sugestao}`);
       return;
     }
@@ -2256,7 +2523,7 @@ function sortearHandler() {
   if (temDadosAntes && !confirm('Isso vai gerar um novo sorteio e apagar os placares atuais. Continuar?')) return;
   const novoState = { ...state, rounds: newRounds };
   if (state.dataInicio && state.horaInicioTorneio) {
-    novoState.agendamentos = agendamentosAutoParaRounds(newRounds, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos);
+    novoState.agendamentos = agendamentosAutoParaRounds(newRounds, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos, state.pausaInicio, state.pausaFim);
   }
   persist(novoState);
   tab = 'rodadas';
@@ -2273,7 +2540,7 @@ function gerarGruposHandler() {
   if (!novosGrupos.length) return;
   const novoState = { ...state, grupos: novosGrupos, eliminatorias: {} };
   if (state.dataInicio && state.horaInicioTorneio) {
-    novoState.agendamentos = agendamentosAutoParaGrupos(novosGrupos, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos);
+    novoState.agendamentos = agendamentosAutoParaGrupos(novosGrupos, state.dataInicio, state.horaInicioTorneio, state.duracaoJogoMin || 40, state.agendamentos, state.pausaInicio, state.pausaFim);
   }
   persist(novoState);
 }
@@ -2290,11 +2557,13 @@ function gerarHorariosHandler(catKey) {
     if (!byFase[chave]) { byFase[chave] = []; faseOrder.push(chave); }
     byFase[chave].push(it);
   });
-  const [h, m] = horaInput.split(':').map(Number);
-  let cursorMin = h * 60 + m;
+  const pausaInicioMin = state.pausaInicio ? horaParaMinutos(state.pausaInicio) : null;
+  const pausaFimMin = state.pausaFim ? horaParaMinutos(state.pausaFim) : null;
+  let cursorMin = horaParaMinutos(horaInput);
   const agendamentos = { ...state.agendamentos };
   faseOrder.forEach((fase) => {
-    const horaStr = `${String(Math.floor(cursorMin / 60) % 24).padStart(2, '0')}:${String(cursorMin % 60).padStart(2, '0')}`;
+    cursorMin = ajustarCursorParaPausa(cursorMin, pausaInicioMin, pausaFimMin);
+    const horaStr = minutosParaHora(cursorMin);
     byFase[fase].forEach((it) => { agendamentos[it.id] = { data: dataInput, hora: horaStr }; });
     cursorMin += duracao;
   });
@@ -2339,16 +2608,27 @@ function trocarJogosHandler(idA, idB) {
 }
 // Troca os confrontos de duas rodadas do Americano entre si (ex: os jogos que sairiam na rodada 2
 // passam a acontecer na 4, e vice-versa) — útil quando o sorteio já saiu mas a ordem de disputa
-// precisa mudar. Só o CONTEÚDO (jogos/duplas/folgas) troca de lugar — o número "Rodada X" mostrado
-// continua andando em sequência (1, 2, 3...), e como cada jogo carrega seu próprio id, qualquer
-// horário/quadra já marcado pra ele viaja junto automaticamente, sem precisar reconfigurar nada.
+// precisa mudar. O CONTEÚDO (jogos/duplas/folgas) troca de posição, e o horário/data acompanha a
+// POSIÇÃO da rodada (não o jogo) — ou seja, a rodada que era "das 9h" continua sendo a rodada das
+// 9h, só que agora com as duplas que antes jogariam na outra. Mesma lógica de trocarJogosHandler,
+// só que aplicada a todos os jogos da rodada de uma vez (dentro da mesma rodada, todo mundo já
+// compartilha o mesmo horário — ver agendamentosAutoParaRounds).
 function trocarRodadasHandler(catKey, indiceA, indiceB) {
   const rodadas = [...(state.rounds[catKey] || [])];
   if (!rodadas[indiceA] || !rodadas[indiceB] || rodadas[indiceA].isFinal || rodadas[indiceB].isFinal) return;
   const { matches: matchesA, byes: byesA } = rodadas[indiceA];
-  rodadas[indiceA] = { ...rodadas[indiceA], matches: rodadas[indiceB].matches, byes: rodadas[indiceB].byes };
+  const { matches: matchesB, byes: byesB } = rodadas[indiceB];
+  rodadas[indiceA] = { ...rodadas[indiceA], matches: matchesB, byes: byesB };
   rodadas[indiceB] = { ...rodadas[indiceB], matches: matchesA, byes: byesA };
-  persist({ ...state, rounds: { ...state.rounds, [catKey]: rodadas } });
+
+  const semHorario = { data: '', hora: '' };
+  const horaA = matchesA[0] ? (state.agendamentos[matchesA[0].id] || semHorario) : semHorario;
+  const horaB = matchesB[0] ? (state.agendamentos[matchesB[0].id] || semHorario) : semHorario;
+  const agendamentos = { ...state.agendamentos };
+  matchesB.forEach((m) => { agendamentos[m.id] = horaA; });
+  matchesA.forEach((m) => { agendamentos[m.id] = horaB; });
+
+  persist({ ...state, rounds: { ...state.rounds, [catKey]: rodadas }, agendamentos });
 }
 function marcarTrocarRodadaHandler(catKey, indice) {
   if (rodadaSelecionadaParaTroca && rodadaSelecionadaParaTroca.catKey === catKey && rodadaSelecionadaParaTroca.indice === indice) {
