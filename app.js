@@ -115,6 +115,7 @@ let unsubReservas = null;
 let unsubReservaConfig = null;
 let selectedReservaData = null;   // 'YYYY-MM-DD'
 let reservaModal = null;          // { modo:'novo'|'pagamento'|'editar', data, quadraId, horario, id? }
+let reservaAvisoAberto = false;   // painel do sino "reservas fora da grade" (admin) aberto/fechado
 let reservaFlash = null;          // mensagem de sucesso curta (admin)
 let reservaEnviandoComprovante = false;
 let reservaErroMsg = null;
@@ -1843,6 +1844,7 @@ function bindEvents() {
     if (action === 'reserva-set-quadra-nome') el.addEventListener('change', () => renomearQuadraReservaHandler(el.dataset.id, el.value));
     if (action === 'reserva-salvar-horarios-padrao') el.addEventListener('click', salvarHorariosPadraoReservaHandler);
     if (action === 'reserva-salvar-horarios-quadra') el.addEventListener('click', () => salvarHorariosQuadraReservaHandler(el.dataset.id));
+    if (action === 'reserva-aviso-toggle') el.addEventListener('click', () => { reservaAvisoAberto = !reservaAvisoAberto; render(); });
     if (action === 'reserva-remove-quadra') el.addEventListener('click', () => removerQuadraReservaHandler(el.dataset.id, el.dataset.nome));
     if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
     if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
@@ -2944,6 +2946,7 @@ function renderReservas() {
     </header>
     <main class="hp-main hp-main-wide">
       ${reservaFlash ? `<div class="signup-ok" style="margin-top:14px">${esc(reservaFlash)}</div>` : ''}
+      ${isAdmin ? renderAvisoReservasForaDaGrade() : ''}
       ${isAdmin ? renderGestaoQuadrasReserva() : ''}
       ${carregando ? `<div class="hint" style="margin-top:20px">Carregando agenda...</div>` : renderGradeReservas(quadras)}
     </main>
@@ -2953,6 +2956,59 @@ function renderReservas() {
     <footer class="hp-footer">atualiza automaticamente</footer>
   `;
   bindEvents();
+}
+
+// Reservas que não aparecem em nenhuma grade atual — a quadra foi removida, ou o horário saiu da
+// lista (semana/fim de semana) daquela quadra. Continuam salvas no banco; este aviso (o sino) existe
+// pra nenhuma reserva sumir da vista do admin sem ele saber.
+function reservasForaDaGrade() {
+  const out = [];
+  const rd = reservasData || {};
+  Object.keys(rd).forEach((data) => {
+    const porQuadra = rd[data] || {};
+    Object.keys(porQuadra).forEach((quadraId) => {
+      const quadra = (quadrasReserva || []).find((q) => q.id === quadraId);
+      const validos = quadra ? horariosDaQuadra(quadra, ehFimDeSemana(data)).horarios : [];
+      const slots = porQuadra[quadraId] || {};
+      Object.keys(slots).forEach((horario) => {
+        if (!slots[horario]) return;
+        if (!quadra) out.push({ data, quadraId, horario, reserva: slots[horario], motivo: 'quadra removida' });
+        else if (!validos.includes(horario)) out.push({ data, quadraId, horario, reserva: slots[horario], motivo: 'horário fora da grade' });
+      });
+    });
+  });
+  out.sort((a, b) => (a.data + a.horario).localeCompare(b.data + b.horario));
+  return out;
+}
+function renderAvisoReservasForaDaGrade() {
+  const foraDaGrade = reservasForaDaGrade();
+  if (!foraDaGrade.length) return '';
+  return `
+    <section class="card reserva-aviso-card" style="margin-top:16px">
+      <button class="card-head" data-action="reserva-aviso-toggle">
+        <span>🔔 ${foraDaGrade.length} reserva${foraDaGrade.length > 1 ? 's' : ''} fora da grade atual</span>
+        <span>${reservaAvisoAberto ? '▲' : '▼'}</span>
+      </button>
+      ${reservaAvisoAberto ? `<div class="card-body">
+        <div class="hint" style="text-align:left;margin-bottom:8px">Continuam salvas, mas não aparecem na grade porque a quadra foi removida ou o horário saiu da lista. Mova pra um horário válido (Editar) ou cancele.</div>
+        ${foraDaGrade.map((it) => {
+          const r = it.reserva;
+          const pend = r.status !== 'confirmada';
+          return `
+          <div class="reserva-fora-item">
+            <div><strong>${esc(quadraReservaNome(it.quadraId))}</strong> · ${esc(rotuloDataReserva(it.data))} · ${esc(it.horario)}–${esc(fimHorarioReserva(it.horario))}</div>
+            <div class="reserva-cel-nome">${esc(r.nome || '—')}${r.telefone ? ` · ${esc(r.telefone)}` : ''}</div>
+            <div class="reserva-cel-badge">${pend ? '⏳ pendente' : '✓ confirmada'} · ${r.origem === 'admin' ? 'balcão' : 'cliente'} · ⚠ ${esc(it.motivo)}</div>
+            <div class="reserva-cel-acoes" style="justify-content:flex-start">
+              <button data-action="reserva-editar" data-data="${it.data}" data-quadra="${esc(it.quadraId)}" data-horario="${it.horario}">Editar / mover</button>
+              ${r.comprovante ? `<button data-action="reserva-ver-comprovante" data-id="${esc(r.id)}">Comprovante</button>` : ''}
+              <button class="btn-danger" data-action="reserva-cancelar" data-data="${it.data}" data-quadra="${esc(it.quadraId)}" data-horario="${it.horario}" data-nome="${esc(r.nome || '')}">Cancelar</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>` : ''}
+    </section>
+  `;
 }
 
 function renderGestaoQuadrasReserva() {
@@ -3108,7 +3164,7 @@ function renderReservaModal() {
       </select>
       <label style="font-size:12px;opacity:.6">Data</label>
       <select id="reserva-data">
-        ${datasReserva().map((d) => `<option value="${d}" ${d === data ? 'selected' : ''}>${esc(rotuloDataReserva(d))}</option>`).join('')}
+        ${[...new Set([...datasReserva(), data])].sort().map((d) => `<option value="${d}" ${d === data ? 'selected' : ''}>${esc(rotuloDataReserva(d))}</option>`).join('')}
       </select>
       <label style="font-size:12px;opacity:.6">Horário</label>
       <select id="reserva-horario">
