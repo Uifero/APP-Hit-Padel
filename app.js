@@ -83,6 +83,7 @@ let unsubscribeTournament = null;
 let usandoCacheOffline = false; // true quando o estado exibido veio do localStorage (sem sinal), não do Firebase ao vivo
 let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
 let menuAdminAberto = false;   // gaveta lateral com os módulos de gestão (Configurações, Quadras, Inscrições...)
+let menuLobbyAberto = false;   // gaveta lateral com os atalhos do topo da Central de Gestão (Reservar quadra, Admin)
 let novoTorneioNome = '';
 let tvSlide = 0;
 let tvTimer = null;
@@ -150,6 +151,7 @@ function selecionarTorneio(id) {
   currentTournamentId = id;
   painelAdmin = null;
   menuAdminAberto = false;
+  menuLobbyAberto = false;
   tab = 'rodadas';
   selectedCategoria = null;
   pubPagamentoAtivo = null;
@@ -718,6 +720,27 @@ function renderCentralGestao(ativos, encerrados) {
     </div>
   `;
 }
+// Gaveta lateral com os atalhos que antes ficavam como botões no cabeçalho da Central de Gestão.
+function renderLobbyDrawer() {
+  if (!menuLobbyAberto) return '';
+  return `
+  <div class="admin-drawer-bg" data-action="fechar-menu-lobby"></div>
+  <div class="admin-drawer">
+    <div class="admin-drawer-head">
+      <span class="admin-drawer-title">Menu</span>
+      <button class="admin-drawer-close" data-action="fechar-menu-lobby">✕</button>
+    </div>
+    <div class="admin-drawer-list">
+      <button class="admin-drawer-item" data-action="abrir-reservas">
+        <div class="dash-title">🎾 Reservar quadra</div>
+      </button>
+      <button class="admin-drawer-item" data-action="toggle-admin">
+        <div class="dash-title">${isAdmin ? 'Admin' : 'Ver como admin'}</div>
+        <div class="dash-sub">${isAdmin ? 'Toque pra sair do modo admin' : 'Toque pra entrar com o PIN'}</div>
+      </button>
+    </div>
+  </div>`;
+}
 
 function renderLobby() {
   const lista = torneiosList ? Object.entries(torneiosList).map(([id, t]) => ({ id, ...t })) : null;
@@ -734,11 +757,11 @@ function renderLobby() {
           <div><div class="hp-name">HIT PADEL</div><div class="hp-live"><span class="dot"></span> ao vivo</div></div>
         </div>
         <div class="hp-header-actions">
-          <button class="hp-back-btn" data-action="abrir-reservas">🎾 Reservar quadra</button>
-          <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
+          <button class="hp-menu-btn" data-action="abrir-menu-lobby" title="Menu">☰</button>
         </div>
       </div>
     </header>
+    ${renderLobbyDrawer()}
     <main class="hp-main ${isAdmin ? 'hp-main-wide' : ''}">
       <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Central de gestão' : 'Torneios em andamento'}</span></div>
       ${lista === null ? (agendarAvisoSeDemorar(), `<div class="hint">Carregando...${avisoDemoraMostrado ? AVISO_DEMORA_HTML : ''}</div>`) : ''}
@@ -1808,6 +1831,7 @@ function bindEvents() {
     const action = el.dataset.action;
     if (action === 'rename') el.addEventListener('change', () => persist({ ...state, name: el.value }));
     if (action === 'toggle-admin') el.addEventListener('click', () => {
+      menuLobbyAberto = false;
       if (isAdmin) { signOut(auth); }
       else { document.getElementById('pin-modal-slot').innerHTML = renderPinModal(); bindPinModal(); }
     });
@@ -1817,8 +1841,10 @@ function bindEvents() {
     if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; menuAdminAberto = false; render(); });
     if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; render(); });
     if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; menuAdminAberto = false; tab = state.tipo === 'chaves' ? 'jogos' : 'rodadas'; render(); });
+    if (action === 'abrir-menu-lobby') el.addEventListener('click', () => { menuLobbyAberto = true; render(); });
+    if (action === 'fechar-menu-lobby') el.addEventListener('click', () => { menuLobbyAberto = false; render(); });
     if (action === 'voltar-lobby') el.addEventListener('click', () => selecionarTorneio(null));
-    if (action === 'abrir-reservas') el.addEventListener('click', abrirReservasHandler);
+    if (action === 'abrir-reservas') el.addEventListener('click', () => { menuLobbyAberto = false; abrirReservasHandler(); });
     if (action === 'voltar-lobby-de-reservas') el.addEventListener('click', sairReservasHandler);
     if (action === 'reserva-sel-data') el.addEventListener('click', () => { selectedReservaData = el.dataset.data; reservaFlash = null; render(); });
     if (action === 'reserva-data-livre') el.addEventListener('change', () => { if (el.value) { selectedReservaData = el.value; reservaFlash = null; render(); } });
