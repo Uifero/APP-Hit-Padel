@@ -78,11 +78,11 @@ function lembrarBusca(tid, termo) {
   try { localStorage.setItem(buscaLembradaKey(tid), termo); } catch (e) { /* localStorage indisponível: só perde a personalização */ }
 }
 let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} depois
-let rodadasEstadoManual = {}; // chave "catKey-ri" -> true (recolhida) / false (aberta), fixado explicitamente ao clicar
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
 let unsubscribeTournament = null;
 let usandoCacheOffline = false; // true quando o estado exibido veio do localStorage (sem sinal), não do Firebase ao vivo
 let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
+let menuAdminAberto = false;   // gaveta lateral com os módulos de gestão (Configurações, Quadras, Inscrições...)
 let novoTorneioNome = '';
 let tvSlide = 0;
 let tvTimer = null;
@@ -149,6 +149,7 @@ function syncUrlEstadoView() {
 function selecionarTorneio(id) {
   currentTournamentId = id;
   painelAdmin = null;
+  menuAdminAberto = false;
   tab = 'rodadas';
   selectedCategoria = null;
   pubPagamentoAtivo = null;
@@ -217,7 +218,6 @@ async function toggleNotificacoesHandler() {
 
 function carregarTorneioAtual() {
   if (unsubscribeTournament) { unsubscribeTournament(); unsubscribeTournament = null; }
-  rodadasEstadoManual = {};
   usandoCacheOffline = false;
   if (!currentTournamentId) { state = null; return; }
   const tid = currentTournamentId;
@@ -454,11 +454,13 @@ function render() {
           </div>
         </div>
         <div class="hp-header-actions">
+          ${isAdmin ? `<button class="hp-menu-btn" data-action="abrir-menu-admin" title="Menu de gestão">☰</button>` : ''}
           <button class="hp-back-btn" data-action="voltar-lobby">◀ Meus torneios</button>
           <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
         </div>
       </div>
     </header>
+    ${isAdmin ? renderAdminDrawer(catPlayers, catKey) : ''}
     <main class="hp-main">
       ${usandoCacheOffline ? `<div class="alerta-atraso">📡 Sem conexão agora — mostrando a última versão salva neste aparelho. Atualiza sozinho assim que a internet voltar.</div>` : ''}
       ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams) : ''}
@@ -1095,12 +1097,6 @@ function renderAoVivoLinha(it) {
 function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
   if (painelAdmin) return renderPainelModulo(painelAdmin, maxCourts, catPlayers, catTeams);
   const catKey = currentCategoria();
-  const totalConfirmadas = state.tipo === 'chaves'
-    ? state.teams.filter((t) => categoriaOf(t) === catKey && t.confirmada).length
-    : catPlayers.filter((p) => p.confirmada).length;
-  const rodadasGeradas = (state.rounds[catKey] || []).length;
-  const gruposGerados = state.grupos.filter((g) => g.categoria === catKey).length;
-  const tipoLabel = tipoLabelOf(state.tipo);
   const resumo = resumoVisaoGeral(catKey);
   const naoGerouAinda = state.tipo === 'chaves' ? state.grupos.length === 0 : Object.values(state.rounds).every((r) => r.length === 0);
   return `
@@ -1131,42 +1127,46 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
       <button class="mode-btn" style="width:100%;margin-top:8px" data-action="exportar-pdf">🖨️ Exportar agenda/placar em PDF</button>
     </div>
   </section>
-  <section class="card">
-    <div class="card-head-static">📋 Painel de gestão</div>
-    <div class="card-body">
-      <div class="dash-grid">
-        <button class="dash-card" data-action="abrir-painel" data-painel="config">
-          <div class="dash-title">Configurações</div>
-          <div class="dash-sub">${esc(tipoLabel)}${state.categorias.length ? ` · ${state.categorias.length} categoria(s)` : ''}${state.valorInscricao > 0 ? ` · ${formatMoeda(state.valorInscricao)}` : ''}</div>
-        </button>
-        <button class="dash-card" data-action="abrir-painel" data-painel="quadras">
-          <div class="dash-title">Quadras e Rodadas</div>
-          <div class="dash-sub">${state.numCourts} quadra(s) · ${state.numRounds} rodada(s)</div>
-        </button>
-        <button class="dash-card" data-action="abrir-painel" data-painel="inscricoes">
-          <div class="dash-title">Inscrições</div>
-          <div class="dash-sub">${state.tipo === 'chaves' ? state.teams.length : state.players.length} no total</div>
-        </button>
-        <button class="dash-card" data-action="abrir-painel" data-painel="duplas">
-          <div class="dash-title">${state.tipo === 'chaves' ? 'Duplas' : 'Jogadoras'}</div>
-          <div class="dash-sub">${totalConfirmadas} confirmada(s)</div>
-        </button>
-        <button class="dash-card" data-action="abrir-painel" data-painel="chaveamento">
-          <div class="dash-title">${state.tipo === 'chaves' ? 'Chaveamento' : 'Sorteio de Rodadas'}</div>
-          <div class="dash-sub">${state.tipo === 'chaves' ? `${gruposGerados} chave(s)` : `${rodadasGeradas} rodada(s)`}</div>
-        </button>
-        <button class="dash-card" data-action="abrir-painel" data-painel="aovivo">
-          <div class="dash-title">Ao Vivo</div>
-          <div class="dash-sub">Status por quadra agora</div>
-        </button>
-        ${state.tipo === 'chaves' ? `
-        <button class="dash-card" data-action="ir-jogos">
-          <div class="dash-title">Jogos</div>
-          <div class="dash-sub">Ver e agendar horários</div>
-        </button>` : ''}
-      </div>
+  `;
+}
+// Conteúdo dos módulos de gestão (Configurações, Quadras, Inscrições...), compartilhado entre a
+// gaveta lateral (renderAdminDrawer) e o próprio botão "abrir-painel" que ela dispara.
+function itensMenuAdmin(catKey, catPlayers) {
+  const totalConfirmadas = state.tipo === 'chaves'
+    ? state.teams.filter((t) => categoriaOf(t) === catKey && t.confirmada).length
+    : catPlayers.filter((p) => p.confirmada).length;
+  const rodadasGeradas = (state.rounds[catKey] || []).length;
+  const gruposGerados = state.grupos.filter((g) => g.categoria === catKey).length;
+  const tipoLabel = tipoLabelOf(state.tipo);
+  const itens = [
+    { painel: 'config', titulo: 'Configurações', sub: `${esc(tipoLabel)}${state.categorias.length ? ` · ${state.categorias.length} categoria(s)` : ''}${state.valorInscricao > 0 ? ` · ${formatMoeda(state.valorInscricao)}` : ''}` },
+    { painel: 'quadras', titulo: 'Quadras e Rodadas', sub: `${state.numCourts} quadra(s) · ${state.numRounds} rodada(s)` },
+    { painel: 'inscricoes', titulo: 'Inscrições', sub: `${state.tipo === 'chaves' ? state.teams.length : state.players.length} no total` },
+    { painel: 'duplas', titulo: state.tipo === 'chaves' ? 'Duplas' : 'Jogadoras', sub: `${totalConfirmadas} confirmada(s)` },
+    { painel: 'chaveamento', titulo: state.tipo === 'chaves' ? 'Chaveamento' : 'Sorteio de Rodadas', sub: state.tipo === 'chaves' ? `${gruposGerados} chave(s)` : `${rodadasGeradas} rodada(s)` },
+    { painel: 'aovivo', titulo: 'Ao Vivo', sub: 'Status por quadra agora' },
+  ];
+  if (state.tipo === 'chaves') itens.push({ acao: 'ir-jogos', titulo: 'Jogos', sub: 'Ver e agendar horários' });
+  return itens;
+}
+function renderAdminDrawer(catPlayers, catKey) {
+  if (!menuAdminAberto) return '';
+  const itens = itensMenuAdmin(catKey, catPlayers);
+  return `
+  <div class="admin-drawer-bg" data-action="fechar-menu-admin"></div>
+  <div class="admin-drawer">
+    <div class="admin-drawer-head">
+      <span class="admin-drawer-title">📋 Painel de gestão</span>
+      <button class="admin-drawer-close" data-action="fechar-menu-admin">✕</button>
     </div>
-  </section>`;
+    <div class="admin-drawer-list">
+      ${itens.map((it) => `
+        <button class="admin-drawer-item ${it.painel && painelAdmin === it.painel ? 'active' : ''}" data-action="${it.acao || 'abrir-painel'}" ${it.painel ? `data-painel="${it.painel}"` : ''}>
+          <div class="dash-title">${it.titulo}</div>
+          <div class="dash-sub">${it.sub}</div>
+        </button>`).join('')}
+    </div>
+  </div>`;
 }
 
 function renderPainelModulo(painel, maxCourts, catPlayers, catTeams) {
@@ -1542,20 +1542,15 @@ function renderTeamsSetup() {
 function renderRounds(catRounds, catKey) {
   return `<div class="rounds">
     ${catRounds.map((rd, ri) => {
-      const chave = `${catKey}-${ri}`;
-      const todasJogadas = rd.matches.every((m) => partidaJogada(m));
-      const recolhida = chave in rodadasEstadoManual ? rodadasEstadoManual[chave] : todasJogadas;
-      const jogadasCount = rd.matches.filter((m) => partidaJogada(m)).length;
       const trocaSelecionada = rodadaSelecionadaParaTroca && rodadaSelecionadaParaTroca.catKey === catKey && rodadaSelecionadaParaTroca.indice === ri;
       return `
       <div class="round-block ${rd.isFinal ? 'is-final' : ''} ${trocaSelecionada ? 'round-selecionada-troca' : ''}">
-        <div class="round-title round-title-toggle" data-action="toggle-rodada" data-chave="${chave}" data-recolhida="${recolhida ? '1' : '0'}">
-          <span>${rd.isFinal ? '🏆 GRANDE FINAL' : `Rodada ${rd.round}`}${recolhida ? ` <em class="round-resumo">(${jogadasCount}/${rd.matches.length} jogadas)</em>` : ''}</span>
-          ${rd.byes && rd.byes.length && !recolhida ? `<span class="bye">folga: ${rd.byes.map(nameOf).map(esc).join(', ')}</span>` : ''}
-          <span class="round-toggle-icon">${recolhida ? '▼' : '▲'}</span>
+        <div class="round-title">
+          <span>${rd.isFinal ? '🏆 GRANDE FINAL' : `Rodada ${rd.round}`}</span>
+          ${rd.byes && rd.byes.length ? `<span class="bye">folga: ${rd.byes.map(nameOf).map(esc).join(', ')}</span>` : ''}
         </div>
         ${isAdmin && !rd.isFinal ? `<div style="margin:4px 0 8px"><button class="mode-btn ${trocaSelecionada ? 'active' : ''}" data-action="marcar-trocar-rodada" data-cat="${esc(catKey)}" data-indice="${ri}">${trocaSelecionada ? '✕ Cancelar troca de rodada' : '🔁 Trocar essa rodada com outra'}</button></div>` : ''}
-        ${recolhida ? '' : `<div class="matches">${rd.matches.map((m) => renderMatch(m, ri)).join('')}</div>`}
+        <div class="matches">${rd.matches.map((m) => renderMatch(m, ri)).join('')}</div>
       </div>`;
     }).join('')}
   </div>`;
@@ -1817,9 +1812,11 @@ function bindEvents() {
       else { document.getElementById('pin-modal-slot').innerHTML = renderPinModal(); bindPinModal(); }
     });
     if (action === 'toggle-setup') el.addEventListener('click', () => { setupOpen = !setupOpen; render(); });
-    if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; render(); });
+    if (action === 'abrir-menu-admin') el.addEventListener('click', () => { menuAdminAberto = true; render(); });
+    if (action === 'fechar-menu-admin') el.addEventListener('click', () => { menuAdminAberto = false; render(); });
+    if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; menuAdminAberto = false; render(); });
     if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; render(); });
-    if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; tab = state.tipo === 'chaves' ? 'jogos' : 'rodadas'; render(); });
+    if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; menuAdminAberto = false; tab = state.tipo === 'chaves' ? 'jogos' : 'rodadas'; render(); });
     if (action === 'voltar-lobby') el.addEventListener('click', () => selecionarTorneio(null));
     if (action === 'abrir-reservas') el.addEventListener('click', abrirReservasHandler);
     if (action === 'voltar-lobby-de-reservas') el.addEventListener('click', sairReservasHandler);
@@ -1930,12 +1927,6 @@ function bindEvents() {
     });
     if (action === 'mostrar-qr') el.addEventListener('click', mostrarQrHandler);
     if (action === 'exportar-pdf') el.addEventListener('click', () => exportarPdfHandler(currentCategoria()));
-    if (action === 'toggle-rodada') el.addEventListener('click', () => {
-      const chave = el.dataset.chave;
-      const atualRecolhida = el.dataset.recolhida === '1';
-      rodadasEstadoManual[chave] = !atualRecolhida;
-      render();
-    });
     if (action === 'toggle-atletas-conhecidos') el.addEventListener('click', () => { mostrarAtletasConhecidos = !mostrarAtletasConhecidos; render(); });
     if (action === 'marcar-trocar-jogo') el.addEventListener('click', () => marcarTrocarJogoHandler(el.dataset.match));
     if (action === 'marcar-trocar-rodada') el.addEventListener('click', () => marcarTrocarRodadaHandler(el.dataset.cat, Number(el.dataset.indice)));

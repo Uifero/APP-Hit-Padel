@@ -250,6 +250,16 @@
   .modal-actions button{flex:1;padding:9px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--chalk);cursor:pointer;}
   .modal-actions .btn-primary{border:none;}
 
+  .hp-menu-btn{flex-shrink:0;width:34px;height:34px;border-radius:10px;background:transparent;color:var(--chalk);border:1px solid var(--line);cursor:pointer;font-size:16px;line-height:1;}
+  .admin-drawer-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:35;}
+  .admin-drawer{position:fixed;top:0;left:0;bottom:0;width:82%;max-width:300px;background:var(--navy);border-right:1px solid var(--line);z-index:36;overflow-y:auto;display:flex;flex-direction:column;}
+  .admin-drawer-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);}
+  .admin-drawer-title{font-family:'Bebas Neue',sans-serif;font-size:18px;color:var(--orange);}
+  .admin-drawer-close{background:none;border:none;color:var(--chalk);font-size:20px;cursor:pointer;padding:4px 8px;}
+  .admin-drawer-list{display:flex;flex-direction:column;padding:10px;gap:8px;}
+  .admin-drawer-item{background:var(--navy-deep);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:left;cursor:pointer;color:var(--chalk);width:100%;}
+  .admin-drawer-item.active{border-color:var(--orange);}
+
   .hp-footer{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.5;background:var(--navy);padding:5px 12px;border-radius:999px;}
 
   /* ---- Reserva de quadra (agenda avulsa) ---- */
