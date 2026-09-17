@@ -445,6 +445,8 @@ function render() {
   const ocultoDoPublico = !isAdmin && !state.visivelPublico;
 
   root.innerHTML = `
+    ${renderAppSidebar()}
+    <div class="app-content-with-sidebar">
     <header class="hp-header">
       <div class="hp-header-inner">
         <div class="hp-brand">
@@ -462,7 +464,7 @@ function render() {
       </div>
     </header>
     ${isAdmin ? renderAdminDrawer(catPlayers, catKey) : ''}
-    <main class="hp-main">
+    <main class="hp-main hp-main-wide">
       ${usandoCacheOffline ? `<div class="alerta-atraso">📡 Sem conexão agora — mostrando a última versão salva neste aparelho. Atualiza sozinho assim que a internet voltar.</div>` : ''}
       ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams) : ''}
       ${ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
@@ -480,6 +482,7 @@ function render() {
     <datalist id="atletas-datalist">${Object.values(atletasConhecidos).map((a) => `<option value="${esc(a.nome)}"></option>`).join('')}</datalist>
     <div id="pin-modal-slot"></div>
     <footer class="hp-footer">atualiza automaticamente</footer>
+    </div>
   `;
   bindEvents();
 }
@@ -755,7 +758,7 @@ function renderLobby() {
         </div>
       </div>
     </header>
-    <main class="hp-main ${isAdmin ? 'hp-main-wide' : ''}">
+    <main class="hp-main hp-main-wide">
       <div class="round-title" style="margin-top:16px"><span>${isAdmin ? 'Central de gestão' : 'Torneios em andamento'}</span></div>
       ${lista === null ? (agendarAvisoSeDemorar(), `<div class="hint">Carregando...${avisoDemoraMostrado ? AVISO_DEMORA_HTML : ''}</div>`) : ''}
       ${lista !== null && isAdmin ? renderCentralGestao(ativos, encerrados) : ''}
