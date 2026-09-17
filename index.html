@@ -49,7 +49,7 @@
   .hp-header-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;}
   .hp-back-btn{flex-shrink:0;font-size:12px;font-weight:600;padding:7px 12px;border-radius:999px;background:transparent;color:var(--chalk);border:1px solid var(--line);cursor:pointer;}
   .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-  @media (min-width:900px){.hp-main-wide .dash-grid{grid-template-columns:repeat(auto-fill,minmax(240px,1fr));}}
+  @media (min-width:900px){.hp-main-wide .dash-grid{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));}}
   .dash-card{background:var(--navy-deep);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:left;cursor:pointer;color:var(--chalk);}
   .dash-title{font-family:'Bebas Neue',sans-serif;font-size:17px;color:var(--orange);}
   .dash-sub{font-size:12px;opacity:.7;margin-top:4px;}
@@ -65,7 +65,7 @@
   .visaogeral-num{font-family:'Bebas Neue',sans-serif;font-size:28px;color:var(--yellow);}
   .visaogeral-label{font-size:11px;opacity:.7;}
   .aovivo-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-  @media (min-width:900px){.hp-main-wide .aovivo-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));}}
+  @media (min-width:900px){.hp-main-wide .aovivo-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}}
   .aovivo-card{background:var(--navy-deep);border:1px solid var(--line);border-radius:12px;padding:12px;}
   .aovivo-card.aovivo-andamento{border-color:#3aa35a;}
   .aovivo-card.aovivo-proxima{border-color:#c9a227;}
@@ -293,7 +293,7 @@
   .reserva-dot.pendente{background:var(--orange);}
   /* uma coluna por quadra: no celular empilha, no desktop espalha lado a lado */
   .reserva-quadras-blocos{display:grid;grid-template-columns:1fr;gap:16px;}
-  @media (min-width:560px){.reserva-quadras-blocos{grid-template-columns:repeat(auto-fill,minmax(320px,1fr));}}
+  @media (min-width:560px){.reserva-quadras-blocos{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));}}
   .reserva-quadra-bloco{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--navy-deep);}
   .reserva-quadra-bloco-titulo{background:var(--navy);font-family:'Bebas Neue',sans-serif;font-size:19px;color:var(--orange);padding:10px 14px;display:flex;align-items:baseline;gap:8px;}
   .reserva-quadra-bloco-titulo .hint{font-family:'Inter',sans-serif;font-size:11px;color:var(--chalk);opacity:.6;}
