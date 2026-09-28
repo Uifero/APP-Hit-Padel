@@ -342,6 +342,43 @@ describe('generateEliminationFromGroups', () => {
     const todos = bracket[0].flatMap((m) => [m.teamA, m.teamB]);
     assert.equal(new Set(todos).size, 4);
   });
+
+  // x1 vence x2 e x3, x2 vence x3 (ou só x1 x x2 se a chave tiver 2 duplas).
+  const chave = (id, tamanho) => {
+    const t = Array.from({ length: tamanho }, (_, i) => `${id}${i + 1}`);
+    const matches = [{ id: `${id}m1`, teamA: t[0], teamB: t[1], scoreA: 6, scoreB: 2 }];
+    if (tamanho === 3) {
+      matches.push({ id: `${id}m2`, teamA: t[0], teamB: t[2], scoreA: 6, scoreB: 2 });
+      matches.push({ id: `${id}m3`, teamA: t[1], teamB: t[2], scoreA: 6, scoreB: 2 });
+    }
+    return { id, teamIds: t, matches };
+  };
+  const quemPassouDireto = (bracket) => bracket[0].filter((m) => m.isBye).map((m) => m.teamA).sort();
+  const primeiraRodadaSemDoisPrimeiros = (bracket, primeiros) => bracket[0].forEach((m) => {
+    if (!m.isBye) assert.ok(!(primeiros.includes(m.teamA) && primeiros.includes(m.teamB)), 'dois 1º-colocados se enfrentando na 1ª rodada');
+  });
+
+  it('bye vai pra 1º de chave de 3, não pra 1º de chave de 2 (mesmo se a chave de 2 foi criada antes)', () => {
+    // 6 classificadas -> chave de 8, 2 byes. Antes: iam pra a1 e b1 (ordem de criação).
+    const bracket = generateEliminationFromGroups([chave('a', 2), chave('b', 3), chave('c', 3)]);
+    assert.deepEqual(quemPassouDireto(bracket), ['b1', 'c1']);
+    primeiraRodadaSemDoisPrimeiros(bracket, ['a1', 'b1', 'c1']);
+  });
+
+  it('chave de 2 só ganha bye quando não sobra 1º de chave de 3', () => {
+    // 6 classificadas, 2 byes, mas só 1 chave de 3 -> o 2º bye vai pra 1º de chave de 2.
+    const bracket = generateEliminationFromGroups([chave('a', 2), chave('b', 2), chave('c', 3)]);
+    const byes = quemPassouDireto(bracket);
+    assert.equal(byes.length, 2);
+    assert.ok(byes.includes('c1'));
+  });
+
+  it('entre os 2º-colocados, o bye também prefere quem veio de chave de 3', () => {
+    // 5 chaves -> 10 classificadas, chave de 16, 6 byes: os 5 primeiros + 1 segundo.
+    const bracket = generateEliminationFromGroups([chave('a', 2), chave('b', 2), chave('c', 2), chave('d', 2), chave('e', 3)]);
+    assert.deepEqual(quemPassouDireto(bracket), ['a1', 'b1', 'c1', 'd1', 'e1', 'e2']);
+    primeiraRodadaSemDoisPrimeiros(bracket, ['a1', 'b1', 'c1', 'd1', 'e1']);
+  });
 });
 
 describe('horaParaMinutos / minutosParaHora', () => {

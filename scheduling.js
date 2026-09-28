@@ -599,12 +599,28 @@ export function propagateWinner(bracket, roundIdx, matchIdx, winnerId) {
     if (matchIdx % 2 === 0) next.teamA = winnerId; else next.teamB = winnerId;
   }
 }
+// Dentro do bloco de primeiros (ou de segundos), o seedOrder sempre dá bye pras primeiras
+// posições (seed 1, 2, 3...) quando sobra vaga na chave (nº de classificadas não é potência de
+// 2). Colocando quem veio de chave de 3 duplas antes de quem veio de chave de 2, o bye (quando
+// existir) cai preferencialmente em cima de quem disputou mais jogos na fase de grupos — uma
+// chave de 2 nunca "pula" uma rodada da eliminatória se sobrar alguém de chave de 3 pra ceder
+// lugar. Isso não muda quem enfrenta quem por sorteio (segue sendo sempre por semeadura), só a
+// prioridade de quem recebe o bye quando ele existe.
+function prioridadeBye(groups, idx) { return groups[idx].teamIds.length >= 3 ? 0 : 1; }
 export function generateEliminationFromGroups(groups) {
   const groupOf = {};
   groups.forEach((g) => g.teamIds.forEach((id) => { groupOf[id] = g.id; }));
   const standingsByGroup = groups.map((g) => computeGroupStandings(g));
-  const primeiros = standingsByGroup.map((s) => s[0]).filter(Boolean);
-  const segundos = standingsByGroup.map((s) => s[1]).filter(Boolean);
+  const primeiros = standingsByGroup
+    .map((s, idx) => ({ team: s[0], idx }))
+    .filter((x) => x.team)
+    .sort((a, b) => prioridadeBye(groups, a.idx) - prioridadeBye(groups, b.idx))
+    .map((x) => x.team);
+  const segundos = standingsByGroup
+    .map((s, idx) => ({ team: s[1], idx }))
+    .filter((x) => x.team)
+    .sort((a, b) => prioridadeBye(groups, a.idx) - prioridadeBye(groups, b.idx))
+    .map((x) => x.team);
   const qualifiers = [...primeiros, ...segundos];
   const n = qualifiers.length;
   const size = nextPow2(Math.max(n, 2));
