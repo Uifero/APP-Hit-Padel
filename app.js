@@ -81,7 +81,8 @@ let torneiosList = null;       // null = ainda carregando; {} ou {id: dados} dep
 let atletasConhecidos = {};    // { nomeLowerCase: { nome, telefone } } — cadastro compartilhado entre todos os torneios do clube, só pra autocompletar
 let unsubscribeTournament = null;
 let usandoCacheOffline = false; // true quando o estado exibido veio do localStorage (sem sinal), não do Firebase ao vivo
-let painelAdmin = null;        // null = grade de módulos | 'config' | 'quadras' | 'inscricoes' | 'duplas' | 'chaveamento' | 'jogos'
+let painelAdmin = null;        // null = "Painel do torneio" | 'inscricoes' | 'jogos' | 'config' | 'pagamentos' | 'aovivo' | 'compartilhar'
+let mostrarQuadrasRodadas = null; // bloco "Quadras, rodadas e horários" em Sorteio e jogos — null = automático (aberto só antes de sortear)
 let menuAdminAberto = false;   // gaveta lateral com os módulos de gestão (Configurações, Quadras, Inscrições...)
 let novoTorneioNome = '';
 let tvSlide = 0;
@@ -154,6 +155,7 @@ function syncUrlEstadoView() {
 function selecionarTorneio(id) {
   currentTournamentId = id;
   painelAdmin = null;
+  mostrarQuadrasRodadas = null;
   menuAdminAberto = false;
   tab = 'rodadas';
   selectedCategoria = null;
@@ -471,16 +473,14 @@ function render() {
     ${isAdmin ? renderAdminDrawer(catPlayers, catKey) : ''}
     <main class="hp-main hp-main-wide">
       ${usandoCacheOffline ? `<div class="alerta-atraso">📡 Sem conexão agora — mostrando a última versão salva neste aparelho. Atualiza sozinho assim que a internet voltar.</div>` : ''}
-      ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams) : ''}
-      ${ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
-      ${!isAdmin && (catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
-      ${!isAdmin ? renderProximaPartidaPublica(catKey) : ''}
+      ${isAdmin ? renderAdminDashboard(maxCourts, catPlayers, catTeams, { catKeys, catKey, catRounds, catGroups, catElim, stats, isChaves }) : ocultoDoPublico ? '<div class="hint" style="margin-top:16px">Este torneio ainda não está disponível pra visualização pública.</div>' : `
+      ${catRounds.length || catGroups.length ? renderBuscaAtleta() : ''}
+      ${renderProximaPartidaPublica(catKey)}
       ${catKeys.length > 1 ? renderCategoriaTabs(catKeys, catKey) : ''}
       ${renderInscricaoPublica()}
-      ${!isAdmin ? renderPagamentoCard() : ''}
-      ${!isAdmin ? renderInscritosPublico(catKey) : ''}
-      ${isAdmin && (catRounds.length || catGroups.length) ? renderBuscaAtleta() : ''}
-      ${!isAdmin && !catRounds.length && !catGroups.length ? renderEstadoVazioPublico(catPlayers, catTeams, isChaves) : ''}
+      ${renderPagamentoCard()}
+      ${renderInscritosPublico(catKey)}
+      ${!catRounds.length && !catGroups.length ? renderEstadoVazioPublico(catPlayers, catTeams, isChaves) : ''}
       ${isChaves ? renderGroupsAndElimination(catGroups, catElim, catTeams, catKey) : renderAmericanoView(catRounds, stats, catPlayers, catKey)}
       `}
     </main>
@@ -587,7 +587,7 @@ function renderChecklistPrimeirosPassos() {
       <div class="card-head-static">👋 Primeiros passos</div>
       <div class="card-body">
         <div class="hint" style="text-align:left">1. Crie seu primeiro torneio abaixo, escolhendo o tipo</div>
-        <div class="hint" style="text-align:left;margin-top:6px">2. Dentro dele, cadastre as jogadoras (ou duplas) em "Inscrições"</div>
+        <div class="hint" style="text-align:left;margin-top:6px">2. Dentro dele, cadastre as jogadoras (ou duplas) em "Inscrições e jogadores"</div>
         <div class="hint" style="text-align:left;margin-top:6px">3. Sorteie as rodadas (ou gere as chaves)</div>
         <div class="hint" style="text-align:left;margin-top:6px">4. Publique o torneio e compartilhe o link com o grupo</div>
       </div>
@@ -1119,16 +1119,77 @@ function renderAoVivoLinha(it) {
   return `<div class="match"><div class="match-head"><span class="court-tag">${it.hora || 'sem horário'}</span></div><div class="team-row"><span class="team-name">${esc(it.a)}</span></div><div class="vs">×</div><div class="team-row"><span class="team-name">${esc(it.b)}</span></div></div>`;
 }
 
-function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
-  if (painelAdmin) return renderPainelModulo(painelAdmin, maxCourts, catPlayers, catTeams);
-  const catKey = currentCategoria();
-  const resumo = resumoVisaoGeral(catKey);
+// ---------- Área do admin dentro de um torneio ----------
+// Tela inicial "Painel do torneio" (o que precisa de atenção + botões grandes, um por assunto) e uma
+// tela dedicada pra cada assunto, sempre com "← Voltar" no mesmo lugar. Só navegação/apresentação:
+// cada tela reaproveita os mesmos blocos (e as mesmas ações) que já existiam.
+function listaInscricoesDoTipo() {
+  return state.tipo === 'chaves' ? state.teams : state.players;
+}
+// O que o admin precisa resolver agora — cada item leva direto pra tela onde se resolve.
+function itensAtencao(catKey) {
+  const lista = listaInscricoesDoTipo();
+  const itens = [];
+  if (state.valorInscricao > 0) {
+    const aguardando = lista.filter((x) => x.statusPagamento === 'aguardando_confirmacao').length;
+    if (aguardando) itens.push({ painel: 'pagamentos', texto: `💰 ${aguardando} pagamento${aguardando > 1 ? 's' : ''} esperando sua confirmação` });
+  } else {
+    const semConfirmar = lista.filter((x) => !x.filaEspera && !x.confirmada).length;
+    if (semConfirmar) itens.push({ painel: 'inscricoes', texto: `📝 ${semConfirmar} inscrição${semConfirmar > 1 ? 'ões' : ''} esperando você confirmar` });
+  }
+  const fila = lista.filter((x) => x.filaEspera).length;
+  if (fila) itens.push({ painel: 'inscricoes', texto: `🕓 ${fila} na fila de espera` });
+  const atrasadas = resumoVisaoGeral(catKey).atrasadas;
+  if (atrasadas) itens.push({ painel: 'jogos', texto: `⚠️ ${atrasadas} partida${atrasadas > 1 ? 's' : ''} já passou do horário sem placar` });
+  return itens;
+}
+function renderBotaoSortear() {
   const naoGerouAinda = state.tipo === 'chaves' ? state.grupos.length === 0 : Object.values(state.rounds).every((r) => r.length === 0);
   return `
+  <section class="card cta-card">
+    <div class="card-body">
+      <button class="btn-primary" style="width:100%" data-action="${state.tipo === 'chaves' ? 'gerar-grupos' : 'sortear'}">🔀 ${naoGerouAinda ? (state.tipo === 'chaves' ? 'Gerar chaves' : 'Sortear rodadas') : (state.tipo === 'chaves' ? 'Gerar chaves novamente' : 'Sortear novamente')}</button>
+      <div class="hint" style="text-align:left;margin-top:6px">${naoGerouAinda ? `Cadastre as ${state.tipo === 'chaves' ? 'duplas' : 'jogadoras'} em "Inscrições e jogadores" antes de sortear.` : 'Pode sortear quantas vezes quiser — cada vez gera uma combinação nova. Isso apaga os placares já lançados.'}</div>
+    </div>
+  </section>`;
+}
+function renderBotoesCompartilhar() {
+  return `
+      <button class="mode-btn" style="width:100%" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="mostrar-qr">🔗 Gerar QR Code do torneio</button>
+      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="exportar-pdf">🖨️ Exportar agenda/placar em PDF</button>`;
+}
+function renderAdminDashboard(maxCourts, catPlayers, catTeams, v) {
+  if (painelAdmin) return renderPainelModulo(painelAdmin, maxCourts, catPlayers, catTeams, v);
+  const catKey = v.catKey;
+  const resumo = resumoVisaoGeral(catKey);
+  const atencao = itensAtencao(catKey);
+  const itens = itensMenuAdmin(catKey, catPlayers);
+  return `
+  ${v.catKeys.length > 1 ? renderCategoriaTabs(v.catKeys, catKey) : ''}
+  <section class="card">
+    <div class="card-head-static">🔔 Precisa de atenção</div>
+    <div class="card-body">
+      ${atencao.length ? `<div class="atencao-lista">${atencao.map((a) => `<button class="atencao-item" data-action="abrir-painel" data-painel="${a.painel}">${a.texto} <span>›</span></button>`).join('')}</div>` : `<div class="hint" style="text-align:left">✓ Tudo em dia por aqui.</div>`}
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-head-static">📋 Painel do torneio</div>
+    <div class="card-body">
+      <div class="dash-grid painel-grid">
+        ${itens.map((it) => `
+          <button class="dash-card painel-btn" data-action="abrir-painel" data-painel="${it.painel}">
+            <div class="painel-btn-emoji">${it.emoji}</div>
+            <div class="dash-title">${it.titulo}</div>
+            <div class="dash-sub">${it.sub}</div>
+          </button>`).join('')}
+      </div>
+    </div>
+  </section>
   <section class="card">
     <div class="card-head-static">📊 Visão geral</div>
     <div class="card-body">
-      ${resumo.atrasadas > 0 ? `<div class="alerta-atraso">⚠️ ${resumo.atrasadas} partida${resumo.atrasadas > 1 ? 's' : ''} passou do horário marcado sem placar lançado</div>` : ''}
       <div class="visaogeral-grid">
         <div class="visaogeral-item"><div class="visaogeral-num">${resumo.total}</div><div class="visaogeral-label">Partidas totais</div></div>
         <div class="visaogeral-item"><div class="visaogeral-num">${resumo.jogados}</div><div class="visaogeral-label">Com resultado</div></div>
@@ -1137,20 +1198,10 @@ function renderAdminDashboard(maxCourts, catPlayers, catTeams) {
       ${resumo.proxima ? `<div class="hint" style="text-align:left;margin-top:6px">Próxima: ${formatData(resumo.proxima.data)} ${resumo.proxima.hora} — ${esc(resumo.proxima.a)} × ${esc(resumo.proxima.b)}</div>` : `<div class="hint" style="text-align:left;margin-top:6px">Nenhuma partida com horário agendado pendente.</div>`}
     </div>
   </section>
-  <section class="card cta-card">
-    <div class="card-body">
-      <button class="btn-primary" style="width:100%" data-action="${state.tipo === 'chaves' ? 'gerar-grupos' : 'sortear'}">🔀 ${naoGerouAinda ? (state.tipo === 'chaves' ? 'Gerar chaves' : 'Sortear rodadas') : (state.tipo === 'chaves' ? 'Gerar chaves novamente' : 'Sortear novamente')}</button>
-      <div class="hint" style="text-align:left;margin-top:6px">${naoGerouAinda ? `Cadastre as ${state.tipo === 'chaves' ? 'duplas' : 'jogadoras'} em "Inscrições" antes de sortear.` : 'Pode sortear quantas vezes quiser — cada vez gera uma combinação nova. Isso apaga os placares já lançados.'}</div>
-    </div>
-  </section>
+  ${renderBotaoSortear()}
   <section class="card">
     <div class="card-head-static">📲 Compartilhar</div>
-    <div class="card-body">
-      <button class="mode-btn" style="width:100%" data-action="compartilhar-whatsapp">📲 Compartilhar torneio no WhatsApp</button>
-      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="abrir-modo-tv">📺 Abrir tela do clube (TV/projetor)</button>
-      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="mostrar-qr">🔗 Gerar QR Code do torneio</button>
-      <button class="mode-btn" style="width:100%;margin-top:8px" data-action="exportar-pdf">🖨️ Exportar agenda/placar em PDF</button>
-    </div>
+    <div class="card-body">${renderBotoesCompartilhar()}</div>
   </section>
   `;
 }
@@ -1163,17 +1214,26 @@ function itensMenuAdmin(catKey, catPlayers) {
   const rodadasGeradas = (state.rounds[catKey] || []).length;
   const gruposGerados = state.grupos.filter((g) => g.categoria === catKey).length;
   const tipoLabel = tipoLabelOf(state.tipo);
-  const itens = [
-    { painel: 'config', titulo: 'Configurações', sub: `${esc(tipoLabel)}${state.categorias.length ? ` · ${state.categorias.length} categoria(s)` : ''}${state.valorInscricao > 0 ? ` · ${formatMoeda(state.valorInscricao)}` : ''}` },
-    { painel: 'quadras', titulo: 'Quadras e Rodadas', sub: `${state.numCourts} quadra(s) · ${state.numRounds} rodada(s)` },
-    { painel: 'inscricoes', titulo: 'Inscrições', sub: `${state.tipo === 'chaves' ? state.teams.length : state.players.length} no total` },
-    { painel: 'duplas', titulo: state.tipo === 'chaves' ? 'Duplas' : 'Jogadoras', sub: `${totalConfirmadas} confirmada(s)` },
-    { painel: 'chaveamento', titulo: state.tipo === 'chaves' ? 'Chaveamento' : 'Sorteio de Rodadas', sub: state.tipo === 'chaves' ? `${gruposGerados} chave(s)` : `${rodadasGeradas} rodada(s)` },
-    { painel: 'aovivo', titulo: 'Ao Vivo', sub: 'Status por quadra agora' },
+  const lista = listaInscricoesDoTipo();
+  const aguardandoPag = lista.filter((x) => x.statusPagamento === 'aguardando_confirmacao').length;
+  const camerasAtivas = (state.camerasAoVivo || []).filter((c) => c.ativa && c.youtubeId).length;
+  return [
+    { painel: 'inscricoes', emoji: '👥', titulo: 'Inscrições e jogadores', sub: `${lista.filter((x) => !x.filaEspera).length} inscrito(s) · ${totalConfirmadas} confirmado(s) nesta categoria` },
+    { painel: 'jogos', emoji: '🎾', titulo: 'Sorteio e jogos', sub: state.tipo === 'chaves' ? `${gruposGerados} chave(s) · placares e horários` : `${rodadasGeradas} rodada(s) · placares e ranking` },
+    { painel: 'config', emoji: '⚙️', titulo: 'Configurações do torneio', sub: `${esc(tipoLabel)}${state.categorias.length ? ` · ${state.categorias.length} categoria(s)` : ''}${state.valorInscricao > 0 ? ` · ${formatMoeda(state.valorInscricao)}` : ' · grátis'}` },
+    { painel: 'pagamentos', emoji: '💰', titulo: 'Pagamentos', sub: state.valorInscricao > 0 ? (aguardandoPag ? `${aguardandoPag} esperando confirmação` : 'Nada esperando confirmação') : 'Torneio grátis' },
+    { painel: 'aovivo', emoji: '📹', titulo: 'Transmissão ao vivo', sub: camerasAtivas ? `${camerasAtivas} câmera(s) no ar` : 'Câmeras e quadras agora' },
+    { painel: 'compartilhar', emoji: '📲', titulo: 'Compartilhar e visibilidade', sub: `${state.visivelPublico ? 'Visível' : 'Oculto'} · inscrições ${state.inscricoesAbertas ? 'abertas' : 'fechadas'}` },
   ];
-  if (state.tipo === 'chaves') itens.push({ acao: 'ir-jogos', titulo: 'Jogos', sub: 'Ver e agendar horários' });
-  return itens;
 }
+const TITULOS_PAINEL = {
+  inscricoes: '👥 Inscrições e jogadores',
+  jogos: '🎾 Sorteio e jogos',
+  config: '⚙️ Configurações do torneio',
+  pagamentos: '💰 Pagamentos',
+  aovivo: '📹 Transmissão ao vivo',
+  compartilhar: '📲 Compartilhar e visibilidade',
+};
 function renderAdminDrawer(catPlayers, catKey) {
   if (!menuAdminAberto) return '';
   const itens = itensMenuAdmin(catKey, catPlayers);
@@ -1185,30 +1245,104 @@ function renderAdminDrawer(catPlayers, catKey) {
       <button class="admin-drawer-close" data-action="fechar-menu-admin">✕</button>
     </div>
     <div class="admin-drawer-list">
+      <button class="admin-drawer-item ${!painelAdmin ? 'active' : ''}" data-action="fechar-painel">
+        <div class="dash-title">🏠 Painel do torneio</div>
+        <div class="dash-sub">Tela inicial</div>
+      </button>
       ${itens.map((it) => `
-        <button class="admin-drawer-item ${it.painel && painelAdmin === it.painel ? 'active' : ''}" data-action="${it.acao || 'abrir-painel'}" ${it.painel ? `data-painel="${it.painel}"` : ''}>
-          <div class="dash-title">${it.titulo}</div>
+        <button class="admin-drawer-item ${painelAdmin === it.painel ? 'active' : ''}" data-action="abrir-painel" data-painel="${it.painel}">
+          <div class="dash-title">${it.emoji} ${it.titulo}</div>
           <div class="dash-sub">${it.sub}</div>
         </button>`).join('')}
     </div>
   </div>`;
 }
 
-function renderPainelModulo(painel, maxCourts, catPlayers, catTeams) {
+function cardSimples(html, titulo) {
+  return `<section class="card">${titulo ? `<div class="card-head-static">${titulo}</div>` : ''}<div class="card-body">${html}</div></section>`;
+}
+function renderPainelModulo(painel, maxCourts, catPlayers, catTeams, v) {
   const minRounds = minRoundsForFullCoverage(catPlayers.length, Math.min(state.numCourts, maxCourts));
-  const titulos = { config: 'Configurações', quadras: 'Quadras e Rodadas', inscricoes: 'Inscrições', duplas: state.tipo === 'chaves' ? 'Duplas' : 'Jogadoras', chaveamento: state.tipo === 'chaves' ? 'Chaveamento' : 'Sorteio de Rodadas', aovivo: 'Ao Vivo' };
+  const catKey = v.catKey;
+  const abasCategoria = v.catKeys.length > 1 ? renderCategoriaTabs(v.catKeys, catKey) : '';
+  const nomeCategoria = state.categorias.length ? ` — ${esc(catLabel(catKey) || 'Geral')}` : '';
   let content = '';
-  if (painel === 'config') content = renderConfigModulo();
-  else if (painel === 'quadras') content = renderQuadrasModulo(maxCourts, minRounds, catPlayers.length);
-  else if (painel === 'inscricoes') content = state.tipo === 'chaves' ? renderTeamsSetup() : renderPlayersSetup(minRounds);
-  else if (painel === 'duplas') content = renderDuplasModulo(catTeams, catPlayers);
-  else if (painel === 'chaveamento') content = renderChaveamentoModulo();
-  else if (painel === 'aovivo') content = renderAoVivoModulo(currentCategoria());
+  if (painel === 'inscricoes') {
+    content = cardSimples(state.tipo === 'chaves' ? renderTeamsSetup() : renderPlayersSetup(minRounds))
+      + cardSimples(renderDuplasModulo(catTeams, catPlayers), `✓ Confirmad${state.tipo === 'chaves' ? 'as (duplas)' : 'as'}${nomeCategoria}`);
+  } else if (painel === 'jogos') {
+    const temJogos = v.catRounds.length || v.catGroups.length;
+    const quadrasAberto = mostrarQuadrasRodadas === null ? !temJogos : mostrarQuadrasRodadas;
+    content = `
+      ${abasCategoria}
+      <section class="card">
+        <button class="card-head" data-action="toggle-quadras-rodadas"><span>🏟️ Quadras, rodadas e horários</span><span>${quadrasAberto ? '▲' : '▼'}</span></button>
+        ${quadrasAberto ? `<div class="card-body">${renderQuadrasModulo(maxCourts, minRounds, catPlayers.length)}</div>` : ''}
+      </section>
+      ${renderBotaoSortear()}
+      ${temJogos ? renderBuscaAtleta() : `<div class="hint" style="margin-top:8px">Nenhum jogo ainda nesta categoria — use o botão acima pra ${state.tipo === 'chaves' ? 'gerar as chaves' : 'sortear as rodadas'}.</div>`}
+      ${v.isChaves ? renderGroupsAndElimination(v.catGroups, v.catElim, catTeams, catKey) : renderAmericanoView(v.catRounds, v.stats, catPlayers, catKey)}
+    `;
+  } else if (painel === 'config') {
+    content = cardSimples(renderConfigModulo());
+  } else if (painel === 'pagamentos') {
+    content = renderPagamentosModulo();
+  } else if (painel === 'aovivo') {
+    content = abasCategoria + cardSimples(renderAoVivoModulo(catKey));
+  } else if (painel === 'compartilhar') {
+    content = cardSimples(renderVisibilidadeModulo(), '👁 Quem pode ver e se inscrever') + cardSimples(renderBotoesCompartilhar(), '📲 Compartilhar');
+  }
   return `
-  <section class="card">
-    <button class="card-head" data-action="fechar-painel"><span>← ${esc(titulos[painel] || 'Voltar')}</span><span>▲</span></button>
-    <div class="card-body">${content}</div>
-  </section>`;
+  <div class="painel-topo">
+    <button class="painel-voltar" data-action="fechar-painel">← Voltar</button>
+    <div class="painel-titulo">${TITULOS_PAINEL[painel] || ''}</div>
+  </div>
+  ${content}`;
+}
+// Tela "Pagamentos": junta num lugar só o que antes ficava espalhado na lista de inscrições. Usa os
+// mesmos botões (renderStatusBadge / renderStatusFilaEspera), então marcar/desfazer pago funciona igual.
+function renderPagamentosModulo() {
+  if (!(state.valorInscricao > 0)) {
+    return cardSimples(`<div class="hint" style="text-align:left">Este torneio é grátis — não tem pagamento pra acompanhar. Pra cobrar inscrição, coloque o valor em "Configurações do torneio".</div>`);
+  }
+  const listKey = state.tipo === 'chaves' ? 'teams' : 'players';
+  const lista = listaInscricoesDoTipo();
+  const ativos = lista.filter((x) => !x.filaEspera);
+  const espera = lista.filter((x) => x.filaEspera);
+  const linha = (x, badge) => `<span class="chip">${esc(x.name)}${x.categoria ? ` <em>(${esc(x.categoria)})</em>` : ''} ${badge}</span>`;
+  const grupo = (titulo, itens, vazio) => `
+    <div class="field">
+      <label>${titulo} (${itens.length})</label>
+      ${itens.length ? `<div class="chips chips-lista">${itens.join('')}</div>` : `<div class="hint" style="text-align:left">${vazio}</div>`}
+    </div>`;
+  const aguardando = ativos.filter((x) => x.statusPagamento === 'aguardando_confirmacao');
+  const pendentes = ativos.filter((x) => (x.statusPagamento || 'pendente') === 'pendente');
+  const pagos = ativos.filter((x) => x.statusPagamento === 'pago');
+  return cardSimples(`
+    ${renderResumoPagamentos(ativos, state.tipo === 'chaves' ? 'dupla' : 'atleta')}
+    ${grupo('🕓 Esperando sua confirmação', aguardando.map((x) => linha(x, renderStatusBadge(x, listKey))), 'Ninguém avisou que pagou ainda.')}
+    ${grupo('⏳ Ainda não pagaram', pendentes.map((x) => linha(x, renderStatusBadge(x, listKey))), 'Ninguém pendente.')}
+    ${grupo('✓ Pagos', pagos.map((x) => linha(x, renderStatusBadge(x, listKey))), 'Nenhum pagamento confirmado ainda.')}
+    ${espera.length ? grupo('Na fila de espera (aprove em "Inscrições e jogadores")', espera.map((x) => linha(x, renderStatusFilaEspera(x))), '') : ''}
+  `);
+}
+function renderVisibilidadeModulo() {
+  return `
+    <div class="field">
+      <label>Visibilidade pro público</label>
+      <button class="mode-btn ${state.visivelPublico ? 'active' : ''}" data-action="toggle-visivel">${state.visivelPublico ? '✓ Visível (torneio postado)' : 'Oculto'}</button>
+      <div class="hint" style="text-align:left;margin-top:4px">${state.visivelPublico ? 'Qualquer pessoa com o link já vê rodadas, chaves e ranking.' : 'Ninguém vê nada do torneio ainda. Ative quando quiser divulgar.'}</div>
+    </div>
+    <div class="field">
+      <label>Inscrições públicas</label>
+      <button class="mode-btn ${state.inscricoesAbertas ? 'active' : ''}" data-action="toggle-inscricoes">${state.inscricoesAbertas ? '✓ Abertas' : 'Fechadas'}</button>
+      <div class="hint" style="text-align:left;margin-top:4px">${state.inscricoesAbertas ? 'Qualquer pessoa com o link já pode se inscrever sozinha.' : 'Ninguém vê o formulário de inscrição ainda.'}</div>
+    </div>
+    <div class="field">
+      <label>Avisos de inscrição</label>
+      <button class="mode-btn ${notificacoesAtivas() ? 'active' : ''}" data-action="toggle-notificacoes">${notificacoesAtivas() ? '✓ Ativados' : 'Ativar avisos'}</button>
+      <div class="hint" style="text-align:left;margin-top:4px">Mostra um aviso no navegador quando alguém se inscrever, enquanto esta aba estiver aberta.</div>
+    </div>`;
 }
 
 function renderConfigModulo() {
@@ -1217,24 +1351,9 @@ function renderConfigModulo() {
       <label>Nome do torneio</label>
       <input id="config-nome-torneio" value="${esc(state.name)}" data-action="rename" />
     </div>
-    <div class="field">
-      <label>Visibilidade pro público</label>
-      <button class="mode-btn ${state.visivelPublico ? 'active' : ''}" data-action="toggle-visivel">${state.visivelPublico ? '✓ Visível (torneio postado)' : 'Oculto'}</button>
-      <div class="hint" style="text-align:left;margin-top:4px">${state.visivelPublico ? 'Qualquer pessoa com o link já vê rodadas, chaves e ranking.' : 'Ninguém vê nada do torneio ainda. Ative quando quiser divulgar.'}</div>
-    </div>
-    <div class="field">
-      <label>Notificações de inscrição</label>
-      <button class="mode-btn ${notificacoesAtivas() ? 'active' : ''}" data-action="toggle-notificacoes">${notificacoesAtivas() ? '✓ Ativadas' : 'Ativar notificações'}</button>
-      <div class="hint" style="text-align:left;margin-top:4px">Mostra um aviso no navegador quando alguém se inscrever, enquanto esta aba estiver aberta.</div>
-    </div>
     <div class="row2">
       <div class="field"><label>Data de início</label><input type="date" id="data-inicio" value="${esc(state.dataInicio)}" data-action="set-data-inicio" /></div>
       <div class="field"><label>Data de término</label><input type="date" id="data-fim" value="${esc(state.dataFim)}" data-action="set-data-fim" /></div>
-    </div>
-    <div class="field">
-      <label>Inscrições públicas</label>
-      <button class="mode-btn ${state.inscricoesAbertas ? 'active' : ''}" data-action="toggle-inscricoes">${state.inscricoesAbertas ? '✓ Abertas' : 'Fechadas'}</button>
-      <div class="hint" style="text-align:left;margin-top:4px">${state.inscricoesAbertas ? 'Qualquer pessoa com o link já pode se inscrever sozinha.' : 'Ninguém vê o formulário de inscrição ainda.'}</div>
     </div>
     <div class="field">
       <label>Tipo de torneio</label>
@@ -1256,6 +1375,11 @@ function renderConfigModulo() {
         ${state.tipo === 'chaves' ? 'Cobrado sempre o valor total da dupla, mesmo quando ela se inscreve "sem parceiro(a)".' : 'Cobrado por atleta (as duplas do Americano são sorteadas e mudam a cada rodada).'}
         ${state.valorInscricao > 0 && !pixConfig.chave ? ' <span class="hint-alerta">⚠ Configure sua chave Pix na Central de Gestão pra ela aparecer na hora do pagamento.</span>' : ''}
       </div>
+    </div>
+    <div class="field">
+      <label>Chave Pix</label>
+      <div class="hint" style="text-align:left;margin-bottom:6px">${pixConfig.chave ? `Usando a chave do clube: <strong>${esc(pixConfig.chave)}</strong>.` : 'Nenhuma chave cadastrada ainda.'} A chave é uma só pra todos os torneios e fica na Central de Gestão.</div>
+      <button class="mode-btn" data-action="voltar-lobby">Abrir Central de Gestão</button>
     </div>
     ${renderCategoriasSetup()}
     ${renderLimitesPorCategoria()}
@@ -1376,7 +1500,7 @@ function renderQuadrasModulo(maxCourts, minRounds, numJogadoras) {
       <div class="field"><label>Horário de início dos jogos</label><input type="time" id="hora-inicio-torneio" value="${esc(state.horaInicioTorneio)}" data-action="set-hora-inicio-torneio" /></div>
       <div class="field"><label>Duração de cada jogo (min)</label><input type="number" min="1" id="duracao-jogo-min" value="${state.duracaoJogoMin}" data-action="set-duracao-jogo-min" /></div>
     </div>
-    <div class="hint" style="text-align:left">Preenchidos junto com a Data de início (na Configuração), os horários de todos os jogos são gerados automaticamente assim que você sortear as rodadas ou gerar as chaves — sem precisar entrar na aba Jogos depois.</div>
+    <div class="hint" style="text-align:left">Preenchidos junto com a Data de início (em "Configurações do torneio"), os horários de todos os jogos são gerados automaticamente assim que você sortear as rodadas ou gerar as chaves — sem precisar entrar na aba Jogos depois.</div>
     <div class="row2">
       <div class="field"><label>Início da pausa (opcional)</label><input type="time" id="pausa-inicio" value="${esc(state.pausaInicio || '')}" data-action="set-pausa-inicio" /></div>
       <div class="field"><label>Volta dos jogos após a pausa</label><input type="time" id="pausa-fim" value="${esc(state.pausaFim || '')}" data-action="set-pausa-fim" /></div>
@@ -1395,16 +1519,6 @@ function renderDuplasModulo(catTeams, catPlayers) {
   if (!confirmadas.length) return `<div class="hint">Nenhuma jogadora confirmada ainda nessa categoria.</div>`;
   return `<div class="hint" style="text-align:left;margin-bottom:8px">Duplas se formam automaticamente no sorteio (Americano) — esta lista é só das jogadoras confirmadas.</div>
     <div class="chips">${confirmadas.map((p) => `<span class="chip">${esc(p.name)}</span>`).join('')}</div>`;
-}
-
-function renderChaveamentoModulo() {
-  return state.tipo === 'chaves' ? `
-    <button class="btn-primary" data-action="gerar-grupos">Gerar chaves</button>
-    <div class="hint">Cadastre pelo menos 2 duplas por categoria em "Inscrições" primeiro.</div>
-  ` : `
-    <button class="btn-primary" data-action="sortear">Sortear rodadas</button>
-    <div class="hint">Cadastre pelo menos 4 jogadoras por categoria em "Inscrições" primeiro.</div>
-  `;
 }
 
 function renderCategoriasSetup() {
@@ -1839,9 +1953,9 @@ function bindEvents() {
     if (action === 'toggle-setup') el.addEventListener('click', () => { setupOpen = !setupOpen; render(); });
     if (action === 'abrir-menu-admin') el.addEventListener('click', () => { menuAdminAberto = true; render(); });
     if (action === 'fechar-menu-admin') el.addEventListener('click', () => { menuAdminAberto = false; render(); });
-    if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; menuAdminAberto = false; render(); });
-    if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; render(); });
-    if (action === 'ir-jogos') el.addEventListener('click', () => { painelAdmin = null; menuAdminAberto = false; tab = state.tipo === 'chaves' ? 'jogos' : 'rodadas'; render(); });
+    if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; menuAdminAberto = false; render(); window.scrollTo(0, 0); });
+    if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; menuAdminAberto = false; render(); window.scrollTo(0, 0); });
+    if (action === 'toggle-quadras-rodadas') el.addEventListener('click', () => { mostrarQuadrasRodadas = !el.closest('section').querySelector('.card-body'); render(); });
     if (action === 'voltar-lobby') el.addEventListener('click', () => selecionarTorneio(null));
     if (action === 'abrir-reservas') el.addEventListener('click', abrirReservasHandler);
     if (action === 'voltar-lobby-de-reservas') el.addEventListener('click', sairReservasHandler);
@@ -2038,8 +2152,12 @@ function bindEvents() {
     if (action === 'set-duracao-jogo-min') el.addEventListener('change', () => persist({ ...state, duracaoJogoMin: Math.max(1, Number(el.value) || 40) }));
     if (action === 'set-pausa-inicio') el.addEventListener('change', () => persist({ ...state, pausaInicio: el.value }));
     if (action === 'set-pausa-fim') el.addEventListener('change', () => persist({ ...state, pausaFim: el.value }));
-    if (action === 'sortear') el.addEventListener('click', sortearHandler);
-    if (action === 'gerar-grupos') el.addEventListener('click', gerarGruposHandler);
+    if (action === 'sortear' || action === 'gerar-grupos') el.addEventListener('click', () => {
+      // Sorteio feito a partir do Painel do torneio: leva direto pra tela onde os jogos aparecem.
+      const antes = state;
+      (action === 'sortear' ? sortearHandler : gerarGruposHandler)();
+      if (state !== antes && !painelAdmin) { painelAdmin = 'jogos'; render(); window.scrollTo(0, 0); }
+    });
     if (action === 'gerar-final') el.addEventListener('click', gerarFinalHandler);
     if (action === 'tab') el.addEventListener('click', () => { tab = el.dataset.tab; syncUrlEstadoView(); render(); });
     if (['score-a', 'score-b', 'gscore-a', 'gscore-b', 'bscore-a', 'bscore-b'].includes(action)) {
@@ -2590,7 +2708,7 @@ function sortearHandler() {
       const catLabelTxt = catKey === DEFAULT_CAT ? '' : ` na categoria "${catLabel(catKey)}"`;
       const numeroImpar = catPlayers.length % 2 === 1;
       const sugestao = numeroImpar
-        ? 'Com número ímpar de jogadoras, não dá pra sortear direto com esse número de rodadas. Use o campo "quantos jogos cada jogadora deve jogar" (em Quadras e Rodadas) — ele calcula e preenche um número de rodadas que funciona automaticamente.'
+        ? 'Com número ímpar de jogadoras, não dá pra sortear direto com esse número de rodadas. Use o campo "quantos jogos cada jogadora deve jogar" (em "Sorteio e jogos" → "Quadras, rodadas e horários") — ele calcula e preenche um número de rodadas que funciona automaticamente.'
         : `Rodadas que resultam em jogos 100% iguais pra todas: ${proximasRodadasJustasReais(catPlayers.length, courtsReais).join(', ')}.\n\nAjuste o número de rodadas e tente sortear de novo.`;
       alert(`Com ${catPlayers.length} jogadoras${catLabelTxt} e ${courtsReais} quadra(s), ${state.numRounds} rodada(s) NÃO permite que todas joguem exatamente a mesma quantidade de jogos — alguém jogaria a mais e alguém a menos.\n\n${sugestao}`);
       return;

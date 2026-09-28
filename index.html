@@ -53,6 +53,24 @@
   .dash-card{background:var(--navy-deep);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:left;cursor:pointer;color:var(--chalk);}
   .dash-title{font-family:'Bebas Neue',sans-serif;font-size:17px;color:var(--orange);}
   .dash-sub{font-size:12px;opacity:.7;margin-top:4px;}
+  /* Painel do torneio (admin): botões grandes, fáceis de tocar no celular */
+  .painel-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .painel-btn{min-height:110px;min-width:0;display:flex;flex-direction:column;justify-content:flex-start;}
+  .painel-btn:hover{border-color:var(--orange);}
+  .painel-btn .dash-title{font-size:19px;line-height:1.1;overflow-wrap:anywhere;}
+  .painel-btn-emoji{font-size:26px;margin-bottom:6px;}
+  /* celular: um botão por linha, largura toda — nada cortado, fácil de tocar */
+  @media (max-width:560px){
+    .painel-grid{grid-template-columns:1fr;}
+    .painel-btn{min-height:76px;}
+    .painel-btn-emoji{font-size:22px;margin-bottom:4px;}
+  }
+  .painel-topo{display:flex;align-items:center;gap:12px;margin:16px 0 12px;}
+  .painel-voltar{flex-shrink:0;min-height:44px;font-size:15px;font-weight:700;padding:10px 16px;border-radius:12px;background:var(--navy-deep);color:var(--chalk);border:1px solid var(--line);cursor:pointer;}
+  .painel-titulo{font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--orange);line-height:1.1;}
+  .atencao-lista{display:flex;flex-direction:column;gap:8px;}
+  .atencao-item{display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:48px;width:100%;text-align:left;font-size:14px;font-weight:600;padding:10px 14px;border-radius:12px;background:rgba(246,107,13,.14);color:var(--chalk);border:1px solid var(--orange);cursor:pointer;}
+  .atencao-item span{font-size:20px;opacity:.7;}
   .torneio-card{cursor:pointer;}
   .torneio-card:hover{border-color:var(--orange);}
   .torneio-card-acoes{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
@@ -163,7 +181,7 @@
   .round-block.is-final .round-title{color:var(--yellow);}
   .bye-match{display:flex;align-items:center;justify-content:space-between;opacity:.75;}
   .bye-tag{font-size:11px;background:var(--blue);color:var(--chalk);padding:2px 8px;border-radius:999px;}
-  .pending-match{opacity:.5;font-size:13px;display:flex;gap:6px;align-items:center;}
+  .pending-match{opacity:.5;font-size:13px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
   .team-row.winner .team-name{color:var(--yellow);font-weight:700;}
   .chip em{opacity:.6;font-style:normal;font-size:11px;}
   .cat-suggestions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
@@ -199,7 +217,9 @@
   .row select{min-width:0;flex-shrink:1;}
   .row button, .row2{}
   .row > button{padding:0 16px;border-radius:10px;background:var(--orange);color:var(--navy-deep);border:none;font-weight:700;cursor:pointer;}
-  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .row2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+  .row2 input, .row2 select{min-width:0;}
+  @media (max-width:480px){.row2{grid-template-columns:1fr;}}
   .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px;}
   .chips-lista{flex-direction:column;flex-wrap:nowrap;gap:6px;}
   .chip{display:flex;flex-wrap:wrap;align-items:center;gap:5px;background:var(--navy-deep);padding:6px 6px 6px 12px;border-radius:999px;font-size:13px;max-width:100%;}
