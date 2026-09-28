@@ -291,6 +291,7 @@
   .reserva-dot.livre{background:#2f7a4a;}
   .reserva-dot.ocupada{background:#b04545;}
   .reserva-dot.pendente{background:var(--orange);}
+  .reserva-dot.fixo{background:#3f6fb5;}
   /* uma coluna por quadra: no celular empilha, no desktop espalha lado a lado */
   .reserva-quadras-blocos{display:grid;grid-template-columns:1fr;gap:16px;}
   @media (min-width:560px){.reserva-quadras-blocos{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));}}
@@ -305,6 +306,8 @@
   .reserva-cel-passado{opacity:.3;}
   .reserva-cel-ocupada{background:rgba(176,69,69,.16);}
   .reserva-cel-ocupada.reserva-cel-pendente{background:rgba(246,107,13,.14);}
+  .reserva-cel-ocupada.reserva-cel-fixo{background:rgba(63,111,181,.18);}
+  .reserva-tag-fixo{display:inline-block;background:#3f6fb5;color:#fff;font-weight:700;border-radius:6px;padding:1px 6px;margin-right:3px;}
   .reserva-cel-nome{font-weight:700;font-size:13px;}
   .reserva-cel-tel{font-size:12px;opacity:.7;}
   .reserva-cel-badge{font-size:11px;opacity:.8;margin-top:3px;}

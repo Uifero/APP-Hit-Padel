@@ -119,6 +119,11 @@ let reservaAvisoAberto = false;   // painel do sino "reservas fora da grade" (ad
 let reservaFlash = null;          // mensagem de sucesso curta (admin)
 let reservaEnviandoComprovante = false;
 let reservaErroMsg = null;
+// Horário fixo (recorrente semanal): regra guardada uma vez só, nunca uma reserva por semana.
+let reservasFixas = null;         // null = carregando | { [quadraId]: { [diaSemana 0-6]: { [horario]: { id, nome, telefone, criadoEm } } } }
+let unsubReservasFixas = null;
+let reservaFixasAberto = false;   // painel "Horários fixos" (admin) aberto/fechado
+let reservaFixoErroMsg = null;
 
 const root = document.getElementById('root');
 
@@ -1864,6 +1869,9 @@ function bindEvents() {
     if (action === 'reserva-aviso-toggle') el.addEventListener('click', () => { reservaAvisoAberto = !reservaAvisoAberto; render(); });
     if (action === 'reserva-toggle-notif') el.addEventListener('click', toggleNotificacoesReservaHandler);
     if (action === 'reserva-remove-quadra') el.addEventListener('click', () => removerQuadraReservaHandler(el.dataset.id, el.dataset.nome));
+    if (action === 'reserva-fixos-toggle') el.addEventListener('click', () => { reservaFixasAberto = !reservaFixasAberto; reservaFixoErroMsg = null; render(); });
+    if (action === 'reserva-fixo-criar') el.addEventListener('click', criarReservaFixaHandler);
+    if (action === 'reserva-fixo-cancelar') el.addEventListener('click', () => cancelarReservaFixaHandler(el.dataset.quadra, Number(el.dataset.dia), el.dataset.horario));
     if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
     if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -2119,7 +2127,7 @@ function bindEvents() {
       row.style.display = (!termo || nome.includes(termo)) ? '' : 'none';
     });
   });
-  [['pub-player-name', 'pub-player-phone'], ['pub-team-j1', 'pub-team-tel1'], ['pub-team-j2', 'pub-team-tel2'], ['new-team-j1', 'new-team-tel1'], ['new-team-j2', 'new-team-tel2'], ['reserva-nome', 'reserva-telefone']].forEach(([nomeId, telId]) => {
+  [['pub-player-name', 'pub-player-phone'], ['pub-team-j1', 'pub-team-tel1'], ['pub-team-j2', 'pub-team-tel2'], ['new-team-j1', 'new-team-tel1'], ['new-team-j2', 'new-team-tel2'], ['reserva-nome', 'reserva-telefone'], ['reserva-fixo-nome', 'reserva-fixo-telefone']].forEach(([nomeId, telId]) => {
     const nomeEl = document.getElementById(nomeId);
     const telEl = document.getElementById(telId);
     if (!nomeEl || !telEl) return;
@@ -2827,6 +2835,16 @@ function entrarReservas() {
       render();
     }, (err) => { console.error('Falha ao ler config de reservas', err); render(); });
   }
+  if (!unsubReservasFixas) {
+    unsubReservasFixas = onValue(ref(db, 'reservasFixas'), (snap) => {
+      reservasFixas = snap.val() || {};
+      render();
+    }, (err) => {
+      console.error('Falha ao ler horários fixos', err);
+      if (reservasFixas === null) reservasFixas = {};
+      render();
+    });
+  }
   render();
 }
 function sairReservas() {
@@ -2836,8 +2854,11 @@ function sairReservas() {
   if (unsubQuadrasReserva) { unsubQuadrasReserva(); unsubQuadrasReserva = null; }
   if (unsubReservas) { unsubReservas(); unsubReservas = null; }
   if (unsubReservaConfig) { unsubReservaConfig(); unsubReservaConfig = null; }
+  if (unsubReservasFixas) { unsubReservasFixas(); unsubReservasFixas = null; }
   quadrasReserva = null;
   reservasData = null;
+  reservasFixas = null;
+  reservaFixoErroMsg = null;
   reservaConfig = {};
 }
 function abrirReservasHandler() {
@@ -2993,6 +3014,42 @@ function reservaDe(data, quadraId, horario) {
   const porQuadra = porData && porData[quadraId];
   return (porQuadra && porQuadra[horario]) || null;
 }
+// ---- Horário fixo: reservasFixas/{quadraId}/{diaSemana}/{horario} vale TODA semana, calculado na
+// hora de montar a grade (nada é gravado por semana). Cancelar = apagar o nó, libera todas as semanas.
+const DIAS_SEMANA_NOMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+function reservaFixaPath(quadraId, diaSemana, horario) { return `reservasFixas/${quadraId}/${diaSemana}/${horario}`; }
+function diaSemanaDe(iso) { return new Date(iso + 'T12:00:00').getDay(); }
+function isoDeTimestamp(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+// Regra fixa que ocupa esse slot na data pedida (ou null). Só vale a partir do dia em que foi criada,
+// pra não "sujar" o histórico de datas anteriores. O Firebase pode devolver os dias 0-6 como array.
+function reservaFixaDe(data, quadraId, horario) {
+  const porQuadra = reservasFixas && reservasFixas[quadraId];
+  const porDia = porQuadra && porQuadra[diaSemanaDe(data)];
+  const f = porDia && porDia[horario];
+  if (!f) return null;
+  if (f.criadoEm && data < isoDeTimestamp(f.criadoEm)) return null;
+  return f;
+}
+// Lista plana de todas as regras fixas ativas, ordenada por dia da semana, horário e quadra.
+function listarReservasFixas() {
+  const out = [];
+  const rf = reservasFixas || {};
+  Object.keys(rf).forEach((quadraId) => {
+    const porQuadra = rf[quadraId] || {};
+    Object.keys(porQuadra).forEach((dia) => {
+      const porDia = porQuadra[dia] || {};
+      Object.keys(porDia).forEach((horario) => {
+        const f = porDia[horario];
+        if (f) out.push({ ...f, quadraId, diaSemana: Number(dia), horario });
+      });
+    });
+  });
+  out.sort((a, b) => a.diaSemana - b.diaSemana || a.horario.localeCompare(b.horario) || quadraReservaNome(a.quadraId).localeCompare(quadraReservaNome(b.quadraId)));
+  return out;
+}
 // Um horário só pode ser reservado se ainda não começou. Dia anterior = tudo no passado; hoje =
 // compara o início do slot com o relógio; dias à frente = sempre liberado.
 function slotReservaNoPassado(data, horario) {
@@ -3009,7 +3066,7 @@ function quadraReservaNome(quadraId) {
 }
 
 function renderReservas() {
-  const carregando = quadrasReserva === null || reservasData === null;
+  const carregando = quadrasReserva === null || reservasData === null || reservasFixas === null;
   const quadras = quadrasReserva || [];
   root.innerHTML = `
     ${renderAppSidebar()}
@@ -3029,6 +3086,7 @@ function renderReservas() {
       ${reservaFlash ? `<div class="signup-ok" style="margin-top:14px">${esc(reservaFlash)}</div>` : ''}
       ${isAdmin ? renderAvisoReservasForaDaGrade() : ''}
       ${isAdmin ? renderGestaoQuadrasReserva() : ''}
+      ${isAdmin && !carregando ? renderHorariosFixos() : ''}
       ${carregando ? `<div class="hint" style="margin-top:20px">Carregando agenda...</div>` : renderGradeReservas(quadras)}
     </main>
     <datalist id="atletas-datalist">${Object.values(atletasConhecidos).map((a) => `<option value="${esc(a.nome)}"></option>`).join('')}</datalist>
@@ -3142,6 +3200,47 @@ function renderGestaoQuadrasReserva() {
   `;
 }
 
+// Admin: cria horário fixo (vale toda semana) e lista/cancela os que existem. Sem Pix — cadastro direto.
+function renderHorariosFixos() {
+  const quadras = quadrasReserva || [];
+  const fixos = listarReservasFixas();
+  return `
+    <section class="card" style="margin-top:16px">
+      <button class="card-head" data-action="reserva-fixos-toggle">
+        <span>📌 Horários fixos (toda semana) · ${fixos.length}</span>
+        <span>${reservaFixasAberto ? '▲' : '▼'}</span>
+      </button>
+      ${reservaFixasAberto ? `<div class="card-body">
+        <div class="hint" style="text-align:left;margin-bottom:8px">O cliente fica com esse horário reservado <strong>toda semana</strong>, sem precisar renovar. Só sai quando você clicar em "Cancelar horário fixo".</div>
+        ${quadras.length ? `
+        <div class="field"><label>Nome do cliente</label><input id="reserva-fixo-nome" list="atletas-datalist" placeholder="Comece a digitar pra escolher um cliente" /></div>
+        <div class="field"><label>Telefone (whatsapp)</label><input id="reserva-fixo-telefone" type="tel" placeholder="Preenche sozinho se o cliente já reservou antes" /></div>
+        <div class="row2">
+          <div class="field"><label>Quadra</label><select id="reserva-fixo-quadra">${quadras.map((q) => `<option value="${esc(q.id)}">${esc(q.nome)}</option>`).join('')}</select></div>
+          <div class="field"><label>Dia da semana</label><select id="reserva-fixo-dia">${DIAS_SEMANA_NOMES.map((n, i) => `<option value="${i}">${n}</option>`).join('')}</select></div>
+        </div>
+        <div class="field"><label>Horário</label><select id="reserva-fixo-horario">${todosHorariosReservaPossiveis().map((h) => `<option value="${h}">${h}–${fimHorarioReserva(h)}</option>`).join('')}</select></div>
+        ${reservaFixoErroMsg ? `<div class="hint hint-alerta" style="text-align:left;margin-bottom:6px">${esc(reservaFixoErroMsg)}</div>` : ''}
+        <button class="btn-primary" data-action="reserva-fixo-criar">Criar horário fixo</button>
+        ` : `<div class="hint" style="text-align:left">Cadastre uma quadra primeiro.</div>`}
+        <div class="hint" style="text-align:left;margin:16px 0 6px">Horários fixos ativos:</div>
+        ${fixos.length ? fixos.map((f) => {
+          const quadra = quadras.find((q) => q.id === f.quadraId);
+          const naGrade = quadra && horariosDaQuadra(quadra, f.diaSemana === 0 || f.diaSemana === 6).horarios.includes(f.horario);
+          return `
+          <div class="reserva-fora-item">
+            <div><strong>${esc(f.nome || '—')}</strong>${f.telefone ? ` · ${esc(f.telefone)}` : ''}</div>
+            <div class="reserva-cel-badge">Toda ${esc(DIAS_SEMANA_NOMES[f.diaSemana].toLowerCase())} · ${esc(f.horario)}–${esc(fimHorarioReserva(f.horario))} · ${esc(quadraReservaNome(f.quadraId))}${naGrade ? '' : ' · ⚠ fora da grade atual (não aparece na agenda)'}</div>
+            <div class="reserva-cel-acoes" style="justify-content:flex-start">
+              <button class="btn-danger" data-action="reserva-fixo-cancelar" data-quadra="${esc(f.quadraId)}" data-dia="${f.diaSemana}" data-horario="${f.horario}">Cancelar horário fixo</button>
+            </div>
+          </div>`;
+        }).join('') : `<div class="hint" style="text-align:left">Nenhum horário fixo ainda.</div>`}
+      </div>` : ''}
+    </section>
+  `;
+}
+
 function renderGradeReservas(quadras) {
   if (!quadras.length) {
     return `<div class="card" style="margin-top:16px"><div class="card-body"><div class="hint" style="text-align:left">${isAdmin ? 'Cadastre pelo menos uma quadra acima pra abrir a agenda de reservas.' : 'A agenda de reservas ainda não está disponível. Fale com o clube.'}</div></div></div>`;
@@ -3160,6 +3259,7 @@ function renderGradeReservas(quadras) {
       <span><span class="reserva-dot livre"></span> Livre</span>
       <span><span class="reserva-dot ocupada"></span> Reservado</span>
       <span><span class="reserva-dot pendente"></span> Aguardando pagamento</span>
+      ${isAdmin ? `<span><span class="reserva-dot fixo"></span> Horário fixo</span>` : ''}
       <span>· grade de ${isFds ? 'fim de semana' : 'dia de semana'}</span>
     </div>
     <div class="reserva-quadras-blocos">
@@ -3180,6 +3280,21 @@ function renderGradeReservas(quadras) {
 function renderCelulaReserva(data, quadra, horario) {
   const r = reservaDe(data, quadra.id, horario);
   const passado = slotReservaNoPassado(data, horario);
+  const fixo = r ? null : reservaFixaDe(data, quadra.id, horario);
+  if (fixo) {
+    // Público vê igual a qualquer reserva; admin vê a tag "Fixo" pra saber que cancelar ali derruba a regra toda.
+    if (!isAdmin) return `<td class="reserva-cel reserva-cel-ocupada">Reservado</td>`;
+    const dia = diaSemanaDe(data);
+    return `
+    <td class="reserva-cel reserva-cel-ocupada reserva-cel-fixo">
+      <div class="reserva-cel-nome">${esc(fixo.nome || '—')}</div>
+      ${fixo.telefone ? `<div class="reserva-cel-tel">${esc(fixo.telefone)}</div>` : ''}
+      <div class="reserva-cel-badge"><span class="reserva-tag-fixo">📌 Fixo</span> toda ${esc(DIAS_SEMANA_NOMES[dia].toLowerCase())}</div>
+      <div class="reserva-cel-acoes">
+        <button class="btn-danger" data-action="reserva-fixo-cancelar" data-quadra="${esc(quadra.id)}" data-dia="${dia}" data-horario="${horario}">Cancelar horário fixo</button>
+      </div>
+    </td>`;
+  }
   if (!r) {
     if (passado) return `<td class="reserva-cel reserva-cel-passado">—</td>`;
     return `<td class="reserva-cel reserva-cel-livre" data-action="reserva-abrir" data-data="${data}" data-quadra="${esc(quadra.id)}" data-horario="${horario}">Livre</td>`;
@@ -3281,7 +3396,7 @@ function renderReservaModal() {
 
 function abrirModalNovaReserva(data, quadraId, horario) {
   if (slotReservaNoPassado(data, horario)) { alert('Esse horário já passou.'); return; }
-  if (reservaDe(data, quadraId, horario)) { alert('Esse horário acabou de ser reservado.'); render(); return; }
+  if (reservaDe(data, quadraId, horario) || reservaFixaDe(data, quadraId, horario)) { alert('Esse horário acabou de ser reservado.'); render(); return; }
   reservaModal = { modo: 'novo', data, quadraId, horario };
   reservaErroMsg = null;
   reservaFlash = null;
@@ -3309,7 +3424,7 @@ async function criarReservaHandler() {
   const telefone = (document.getElementById('reserva-telefone')?.value || '').trim();
   if (!nome) { reservaErroMsg = 'Preencha o nome.'; render(); return; }
   if (slotReservaNoPassado(data, horario)) { reservaErroMsg = 'Esse horário já passou.'; render(); return; }
-  if (reservaDe(data, quadraId, horario)) { reservaErroMsg = 'Esse horário acabou de ser reservado por outra pessoa.'; render(); return; }
+  if (reservaDe(data, quadraId, horario) || reservaFixaDe(data, quadraId, horario)) { reservaErroMsg = 'Esse horário acabou de ser reservado por outra pessoa.'; render(); return; }
   const confirmadaAdmin = isAdmin && !!document.getElementById('reserva-admin-confirmada')?.checked;
   const reserva = {
     id: uid() + uid(),
@@ -3339,6 +3454,48 @@ async function criarReservaHandler() {
     render();
   }
 }
+// Admin cria horário fixo: grava UMA regra em reservasFixas (nunca uma reserva por semana), sem cobrança.
+async function criarReservaFixaHandler() {
+  const nome = (document.getElementById('reserva-fixo-nome')?.value || '').trim();
+  const telefone = (document.getElementById('reserva-fixo-telefone')?.value || '').trim();
+  const quadraId = document.getElementById('reserva-fixo-quadra')?.value;
+  const diaSemana = Number(document.getElementById('reserva-fixo-dia')?.value);
+  const horario = document.getElementById('reserva-fixo-horario')?.value;
+  reservaFixoErroMsg = null;
+  const quadra = (quadrasReserva || []).find((q) => q.id === quadraId);
+  if (!nome) { reservaFixoErroMsg = 'Preencha o nome do cliente.'; render(); return; }
+  if (!quadra || !horario || !(diaSemana >= 0 && diaSemana <= 6)) { reservaFixoErroMsg = 'Escolha quadra, dia e horário.'; render(); return; }
+  const diaNome = DIAS_SEMANA_NOMES[diaSemana].toLowerCase();
+  if (!horariosDaQuadra(quadra, diaSemana === 0 || diaSemana === 6).horarios.includes(horario)) {
+    reservaFixoErroMsg = `A ${quadra.nome} não tem o horário ${horario} na ${diaNome}. Escolha um horário da grade dessa quadra.`;
+    render();
+    return;
+  }
+  const existente = reservasFixas && reservasFixas[quadraId] && reservasFixas[quadraId][diaSemana] && reservasFixas[quadraId][diaSemana][horario];
+  if (existente) { reservaFixoErroMsg = `Esse horário já é fixo de ${existente.nome || 'outro cliente'}.`; render(); return; }
+  // Reservas avulsas já feitas nesse dia/horário continuam valendo; o fixo passa a ocupar as outras semanas.
+  const conflitos = coletarReservasFlat().filter((r) => r.quadraId === quadraId && r.horario === horario && r.data >= hojeISO() && diaSemanaDe(r.data) === diaSemana);
+  if (conflitos.length && !confirm(`Já existe reserva avulsa nesse horário em: ${conflitos.map((r) => rotuloDataReserva(r.data)).join(', ')}. Ela continua valendo nessa data; o horário fixo vale nas outras semanas. Continuar?`)) return;
+  try {
+    await set(ref(db, reservaFixaPath(quadraId, diaSemana, horario)), { id: uid() + uid(), nome, telefone, criadoEm: Date.now() });
+  } catch (e) {
+    console.error('Falha ao criar horário fixo', e);
+    reservaFixoErroMsg = 'Não foi possível salvar agora. Tente de novo.';
+    render();
+    return;
+  }
+  lembrarAtleta(nome, telefone);
+  reservaFlash = `Horário fixo criado: ${nome} — toda ${diaNome}, ${horario}, ${quadra.nome}.`;
+  render();
+  setTimeout(() => { if (reservasView) { reservaFlash = null; render(); } }, 6000);
+}
+// Apagar a regra libera TODAS as semanas de uma vez (reservas avulsas não são tocadas).
+function cancelarReservaFixaHandler(quadraId, diaSemana, horario) {
+  const f = reservasFixas && reservasFixas[quadraId] && reservasFixas[quadraId][diaSemana] && reservasFixas[quadraId][diaSemana][horario];
+  const quem = f && f.nome ? ` de "${f.nome}"` : '';
+  if (!confirm(`Cancelar o horário fixo${quem} (toda ${DIAS_SEMANA_NOMES[diaSemana].toLowerCase()}, ${horario}, ${quadraReservaNome(quadraId)})?\n\nIsso libera o horário em TODAS as semanas, não só neste dia.`)) return;
+  set(ref(db, reservaFixaPath(quadraId, diaSemana, horario)), null).catch((e) => { console.error('Falha ao cancelar horário fixo', e); alert('Erro ao cancelar. Tente de novo.'); });
+}
 function toggleStatusReservaHandler(data, quadraId, horario) {
   const r = reservaDe(data, quadraId, horario);
   if (!r) return;
@@ -3364,8 +3521,8 @@ async function salvarEdicaoReservaHandler() {
   const novoHorario = document.getElementById('reserva-horario')?.value || orig.horario;
   if (!nome) { reservaErroMsg = 'Preencha o nome.'; render(); return; }
   const mudouSlot = novaQuadra !== orig.quadraId || novaData !== orig.data || novoHorario !== orig.horario;
-  if (mudouSlot && reservaDe(novaData, novaQuadra, novoHorario)) {
-    reservaErroMsg = 'Já existe uma reserva nesse outro horário/quadra.';
+  if (mudouSlot && (reservaDe(novaData, novaQuadra, novoHorario) || reservaFixaDe(novaData, novaQuadra, novoHorario))) {
+    reservaErroMsg = 'Já existe uma reserva (ou horário fixo) nesse outro horário/quadra.';
     render();
     return;
   }
