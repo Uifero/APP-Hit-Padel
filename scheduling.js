@@ -481,7 +481,13 @@ export function computeStats(players, rounds) {
 export function minRoundsForFullCoverage(numPlayers, numCourts) {
   if (numPlayers < 4) return 0;
   const totalPairs = (numPlayers * (numPlayers - 1)) / 2;
-  return Math.ceil(totalPairs / (numCourts * 2));
+  // "numCourts * 2" só é o nº de duplas (parcerias) por rodada quando sobra gente pra encher todas
+  // as quadras. Com poucas jogadoras pra muita quadra (ex: 4 jogadoras / 2 quadras — só dá pra
+  // fechar 1 jogo por rodada, não 2), o limite real é ativosPorRodadaReal/2: usar numCourts*2 aqui
+  // subestimava o nº de rodadas necessárias nesse caso.
+  const parceriasPorRodada = ativosPorRodadaReal(numPlayers, numCourts) / 2;
+  if (parceriasPorRodada === 0) return 0;
+  return Math.ceil(totalPairs / parceriasPorRodada);
 }
 export function minRoundsForGamesPerPlayer(numPlayers, numCourts, jogosDesejados) {
   if (numPlayers < 4 || jogosDesejados < 1) return 0;

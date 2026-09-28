@@ -128,9 +128,11 @@ describe('generateSchedule', () => {
 
 describe('gerarRodadasComByesJustos', () => {
   it('pra 4, 8, 12, 16 e 20 jogadoras / 2 quadras, cobre cada dupla exatamente 1 vez, com jogos e folgas iguais pra todas, no mínimo exato de rodadas', () => {
-    // mínimo teórico absoluto = ceil(C(n,2) / (numCourts*2)) -- confirma que a construção não
-    // desperdiça rodada nenhuma além do estritamente necessário.
-    const minimoTeorico = { 4: 2, 8: 7, 12: 17, 16: 30, 20: 48 };
+    // mínimo teórico absoluto = ceil(C(n,2) / (parcerias por rodada)) -- confirma que a
+    // construção não desperdiça rodada nenhuma além do estritamente necessário. Pra n=4 com 2
+    // quadras só dá pra fechar 1 jogo (2 parcerias) por rodada, não 2 jogos — por isso é 3, não 2
+    // (ver minRoundsForFullCoverage).
+    const minimoTeorico = { 4: 3, 8: 7, 12: 17, 16: 30, 20: 48 };
     for (const n of [4, 8, 12, 16, 20]) {
       const rounds = gerarRodadasComByesJustos(players(n), 2);
       assert.equal(rounds.length, minimoTeorico[n], `n=${n}: deveria bater o mínimo teórico de rodadas`);
@@ -207,6 +209,14 @@ describe('regras de cobertura / distribuição justa', () => {
     // 8 jogadoras = 28 pares possíveis; 2 quadras = 4 confrontos/rodada -> ceil(28/4) = 7
     assert.equal(minRoundsForFullCoverage(8, 2), 7);
     assert.equal(minRoundsForFullCoverage(3, 2), 0); // menos de 4 jogadoras
+  });
+
+  it('com poucas jogadoras pra muita quadra, usa o nº real de parcerias por rodada, não numCourts*2', () => {
+    // 4 jogadoras / 2 quadras: só dá pra fechar 1 jogo (2 parcerias) por rodada, mesmo tendo
+    // quadra sobrando — 6 pares possíveis / 2 parcerias por rodada = 3, não ceil(6/4)=2.
+    assert.equal(minRoundsForFullCoverage(4, 2), 3);
+    // 4 jogadoras / 5 quadras: mesma limitação (só 4 jogadoras = só dá 1 jogo por rodada).
+    assert.equal(minRoundsForFullCoverage(4, 5), 3);
   });
 
   it('minRoundsForGamesPerPlayer calcula rodadas pra garantir X jogos por jogadora', () => {
