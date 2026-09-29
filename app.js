@@ -118,6 +118,7 @@ let unsubReservaConfig = null;
 let selectedReservaData = null;   // 'YYYY-MM-DD'
 let reservaModal = null;          // { modo:'novo'|'pagamento'|'editar', data, quadraId, horario, id? }
 let reservaAvisoAberto = false;   // painel do sino "reservas fora da grade" (admin) aberto/fechado
+let reservaConfigAberta = true;   // bloco "Quadras e horários de reserva" (admin) aberto/fechado — começa aberto
 let reservaFlash = null;          // mensagem de sucesso curta (admin)
 let reservaEnviandoComprovante = false;
 let reservaErroMsg = null;
@@ -1997,6 +1998,7 @@ function bindEvents() {
     if (action === 'reserva-salvar-horarios-padrao') el.addEventListener('click', salvarHorariosPadraoReservaHandler);
     if (action === 'reserva-salvar-horarios-quadra') el.addEventListener('click', () => salvarHorariosQuadraReservaHandler(el.dataset.id));
     if (action === 'reserva-aviso-toggle') el.addEventListener('click', () => { reservaAvisoAberto = !reservaAvisoAberto; render(); });
+    if (action === 'reserva-config-toggle') el.addEventListener('click', toggleReservaConfigHandler);
     if (action === 'reserva-toggle-notif') el.addEventListener('click', toggleNotificacoesReservaHandler);
     if (action === 'reserva-remove-quadra') el.addEventListener('click', () => removerQuadraReservaHandler(el.dataset.id, el.dataset.nome));
     if (action === 'reserva-fixos-toggle') el.addEventListener('click', () => { reservaFixasAberto = !reservaFixasAberto; reservaFixoErroMsg = null; render(); });
@@ -3292,8 +3294,11 @@ function renderGestaoQuadrasReserva() {
   const fdsTxt = horariosReservaTexto(horariosReservaPadrao(true));
   return `
     <section class="card" style="margin-top:16px">
-      <div class="card-head-static">🏟️ Quadras e horários de reserva</div>
-      <div class="card-body">
+      <button class="card-head" data-action="reserva-config-toggle">
+        <span>🏟️ Quadras e horários de reserva</span>
+        <span>${reservaConfigAberta ? '▲' : '▼'}</span>
+      </button>
+      ${reservaConfigAberta ? `<div class="card-body">
         <div class="hint" style="text-align:left;margin-bottom:6px">Agenda de reservas avulsas — não tem relação com as quadras dos torneios. Cada reserva dura 1h30 e o fim é calculado automático. Digite os horários de início separados por vírgula (ex: <code>09:00, 10:30, 14:00</code>).</div>
 
         <div class="field">
@@ -3330,9 +3335,36 @@ function renderGestaoQuadrasReserva() {
           <input id="reserva-nova-quadra" placeholder="Nome da quadra (ex: Quadra 01)" />
           <button data-action="reserva-add-quadra">+</button>
         </div>
-      </div>
+      </div>` : ''}
     </section>
   `;
+}
+// Algum campo do bloco "Quadras e horários de reserva" está diferente do que está salvo? Compara o que
+// está na tela com o banco na hora (em vez de marcar "sujo" ao digitar), porque a tela se redesenha a
+// cada atualização do banco — assim o aviso nunca fica desatualizado e some sozinho depois de salvar.
+// Horários são comparados já normalizados (parseHorariosReserva), então "9:00,10:30" = "09:00, 10:30".
+function reservaConfigTemAlteracaoPendente() {
+  const valor = (id) => document.getElementById(id)?.value;
+  const mesmaLista = (txt, salvo) => parseHorariosReserva(txt).join(',') === (salvo || []).join(',');
+  const semana = valor('reserva-horarios-semana');
+  if (semana !== undefined && !mesmaLista(semana, horariosReservaPadrao(false))) return true;
+  const fds = valor('reserva-horarios-fds');
+  if (fds !== undefined && !mesmaLista(fds, horariosReservaPadrao(true))) return true;
+  if ((valor('reserva-nova-quadra') || '').trim()) return true;
+  return (quadrasReserva || []).some((q) => {
+    const nomeEl = [...document.querySelectorAll('[data-action="reserva-set-quadra-nome"]')].find((el) => el.dataset.id === q.id);
+    if (nomeEl && nomeEl.value.trim() && nomeEl.value.trim() !== q.nome) return true;
+    const qSemana = valor(`reserva-q-semana-${q.id}`);
+    if (qSemana !== undefined && !mesmaLista(qSemana, q.horariosSemana)) return true;
+    const qFds = valor(`reserva-q-fds-${q.id}`);
+    return qFds !== undefined && !mesmaLista(qFds, q.horariosFimDeSemana);
+  });
+}
+function toggleReservaConfigHandler() {
+  if (reservaConfigAberta && reservaConfigTemAlteracaoPendente()
+    && !confirm('Você tem alterações não salvas nas quadras e horários. Recolher mesmo assim e perder essas alterações?')) return;
+  reservaConfigAberta = !reservaConfigAberta;
+  render();
 }
 
 // Admin: cria horário fixo (vale toda semana) e lista/cancela os que existem. Sem Pix — cadastro direto.
