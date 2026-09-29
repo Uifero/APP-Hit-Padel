@@ -279,7 +279,7 @@
   .modal-actions button{flex:1;padding:9px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--chalk);cursor:pointer;}
   .modal-actions .btn-primary{border:none;}
 
-  .hp-menu-btn{flex-shrink:0;width:34px;height:34px;border-radius:10px;background:transparent;color:var(--chalk);border:1px solid var(--line);cursor:pointer;font-size:16px;line-height:1;}
+  .hp-menu-btn{flex-shrink:0;height:34px;padding:0 12px;border-radius:999px;background:transparent;color:var(--chalk);border:1px solid var(--line);cursor:pointer;font-size:12px;font-weight:600;line-height:1;white-space:nowrap;}
   .admin-drawer-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:35;}
   .admin-drawer{position:fixed;top:0;left:0;bottom:0;width:50%;min-width:240px;max-width:420px;background:var(--navy);border-right:1px solid var(--line);z-index:36;overflow-y:auto;display:flex;flex-direction:column;}
   .admin-drawer-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);}
@@ -292,14 +292,27 @@
   .hp-footer{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);font-size:11px;opacity:.5;background:var(--navy);padding:5px 12px;border-radius:999px;}
 
   :root{--sidebar-w:190px;}
-  @media (max-width:640px){:root{--sidebar-w:104px;}}
   .app-sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--sidebar-w);background:var(--navy);border-right:1px solid var(--line);z-index:25;display:flex;flex-direction:column;padding-top:14px;gap:8px;}
   .app-sidebar-item{display:flex;flex-direction:column;align-items:center;gap:6px;background:transparent;border:none;border-left:3px solid transparent;color:var(--chalk);opacity:.65;padding:16px 4px;cursor:pointer;font-size:12px;font-weight:600;}
   .app-sidebar-item.active{opacity:1;color:var(--orange);background:var(--navy-deep);border-left-color:var(--orange);}
   .app-sidebar-icon{font-size:26px;line-height:1;}
-  @media (max-width:640px){.app-sidebar-item{font-size:11px;padding:14px 2px;}.app-sidebar-icon{font-size:22px;}}
   .app-content-with-sidebar{margin-left:var(--sidebar-w);}
   .app-content-with-sidebar .hp-footer{left:calc(50% + (var(--sidebar-w) / 2));}
+  /* botão ☰, fundo escurecido e cabeçalho do painel: só existem no celular */
+  .app-sidebar-toggle, .app-sidebar-bg, .app-sidebar-head{display:none;}
+  /* Celular: a barra sai da tela e vira painel por cima do conteúdo (mesmo esquema do .admin-drawer),
+     aberto pelo ☰ do cabeçalho. O conteúdo passa a usar a largura toda. Acima de 640px nada muda. */
+  @media (max-width:640px){
+    :root{--sidebar-w:0px;}
+    .app-sidebar{width:min(280px,78vw);padding-top:0;z-index:38;transform:translateX(-100%);visibility:hidden;}
+    .app-sidebar.aberta{transform:none;visibility:visible;animation:app-sidebar-entra .2s ease-out;}
+    .app-sidebar-bg{display:block;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:37;}
+    .app-sidebar-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);}
+    .app-sidebar-item{flex-direction:row;justify-content:flex-start;gap:14px;padding:16px 18px;font-size:16px;}
+    .app-sidebar-icon{font-size:24px;}
+    .app-sidebar-toggle{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:40px;height:40px;border-radius:10px;background:transparent;color:var(--chalk);border:1px solid var(--line);cursor:pointer;font-size:20px;line-height:1;}
+  }
+  @keyframes app-sidebar-entra{from{transform:translateX(-100%);}to{transform:none;}}
 
   /* ---- Reserva de quadra (agenda avulsa) ---- */
   .reserva-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0;}

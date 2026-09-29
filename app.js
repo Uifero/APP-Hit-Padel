@@ -84,6 +84,7 @@ let usandoCacheOffline = false; // true quando o estado exibido veio do localSto
 let painelAdmin = null;        // null = "Painel do torneio" | 'inscricoes' | 'jogos' | 'config' | 'pagamentos' | 'aovivo' | 'compartilhar'
 let mostrarQuadrasRodadas = null; // bloco "Quadras, rodadas e horários" em Sorteio e jogos — null = automático (aberto só antes de sortear)
 let menuAdminAberto = false;   // gaveta lateral com os módulos de gestão (Configurações, Quadras, Inscrições...)
+let appSidebarAberta = false;  // barra lateral Torneios/Quadras aberta por cima do conteúdo (só tem efeito no celular)
 let novoTorneioNome = '';
 let tvSlide = 0;
 let tvTimer = null;
@@ -457,6 +458,7 @@ function render() {
     <header class="hp-header">
       <div class="hp-header-inner">
         <div class="hp-brand">
+          ${renderBotaoAppSidebar()}
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
           <div>
             ${isAdmin ? `<input class="hp-name-input" data-action="rename" value="${esc(state.name)}" />` : `<div class="hp-name">${esc(state.name)}</div>`}
@@ -464,7 +466,7 @@ function render() {
           </div>
         </div>
         <div class="hp-header-actions">
-          ${isAdmin ? `<button class="hp-menu-btn" data-action="abrir-menu-admin" title="Menu de gestão">☰</button>` : ''}
+          ${isAdmin ? `<button class="hp-menu-btn" data-action="abrir-menu-admin" title="Menu de gestão">⚙️ Gestão</button>` : ''}
           <button class="hp-back-btn" data-action="voltar-lobby">◀ Meus torneios</button>
           <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
         </div>
@@ -727,12 +729,18 @@ function renderCentralGestao(ativos, encerrados) {
     </div>
   `;
 }
-// Barra lateral fixa com as duas seções de topo do app (Torneios / Quadras) — sempre visível,
-// tanto na Central de Gestão quanto na agenda de Reservas. O Admin fica só no cabeçalho.
+// Barra lateral com as duas seções de topo do app (Torneios / Quadras). No desktop fica fixa e sempre
+// visível; no celular (≤640px, ver index.html) vira painel por cima do conteúdo, aberto pelo botão ☰
+// do cabeçalho (renderBotaoAppSidebar) e fechado ao tocar fora, no ✕ ou num dos itens.
 function renderAppSidebar() {
   const emReservas = !!reservasView;
   return `
-  <nav class="app-sidebar">
+  ${appSidebarAberta ? `<div class="app-sidebar-bg" data-action="fechar-app-sidebar"></div>` : ''}
+  <nav class="app-sidebar ${appSidebarAberta ? 'aberta' : ''}">
+    <div class="app-sidebar-head">
+      <span class="admin-drawer-title">Menu</span>
+      <button class="admin-drawer-close" data-action="fechar-app-sidebar" title="Fechar">✕</button>
+    </div>
     <button class="app-sidebar-item ${!emReservas ? 'active' : ''}" data-action="voltar-lobby-de-reservas" title="Torneios">
       <span class="app-sidebar-icon">🏆</span><span class="app-sidebar-label">Torneios</span>
     </button>
@@ -740,6 +748,10 @@ function renderAppSidebar() {
       <span class="app-sidebar-icon">🎾</span><span class="app-sidebar-label">Quadras</span>
     </button>
   </nav>`;
+}
+// Botão ☰ que abre a barra lateral — só aparece no celular (no desktop a barra já está sempre visível).
+function renderBotaoAppSidebar() {
+  return `<button class="app-sidebar-toggle" data-action="abrir-app-sidebar" title="Abrir menu (Torneios / Quadras)">☰</button>`;
 }
 
 function renderLobby() {
@@ -755,6 +767,7 @@ function renderLobby() {
     <header class="hp-header">
       <div class="hp-header-inner">
         <div class="hp-brand">
+          ${renderBotaoAppSidebar()}
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
           <div><div class="hp-name">HIT PADEL</div><div class="hp-live"><span class="dot"></span> ao vivo</div></div>
         </div>
@@ -1951,14 +1964,17 @@ function bindEvents() {
       else { document.getElementById('pin-modal-slot').innerHTML = renderPinModal(); bindPinModal(); }
     });
     if (action === 'toggle-setup') el.addEventListener('click', () => { setupOpen = !setupOpen; render(); });
-    if (action === 'abrir-menu-admin') el.addEventListener('click', () => { menuAdminAberto = true; render(); });
+    // As duas gavetas (menu de gestão e barra Torneios/Quadras) nunca ficam abertas juntas.
+    if (action === 'abrir-menu-admin') el.addEventListener('click', () => { menuAdminAberto = true; appSidebarAberta = false; render(); });
+    if (action === 'abrir-app-sidebar') el.addEventListener('click', () => { appSidebarAberta = true; menuAdminAberto = false; render(); });
+    if (action === 'fechar-app-sidebar') el.addEventListener('click', () => { appSidebarAberta = false; render(); });
     if (action === 'fechar-menu-admin') el.addEventListener('click', () => { menuAdminAberto = false; render(); });
     if (action === 'abrir-painel') el.addEventListener('click', () => { painelAdmin = el.dataset.painel; menuAdminAberto = false; render(); window.scrollTo(0, 0); });
     if (action === 'fechar-painel') el.addEventListener('click', () => { painelAdmin = null; menuAdminAberto = false; render(); window.scrollTo(0, 0); });
     if (action === 'toggle-quadras-rodadas') el.addEventListener('click', () => { mostrarQuadrasRodadas = !el.closest('section').querySelector('.card-body'); render(); });
     if (action === 'voltar-lobby') el.addEventListener('click', () => selecionarTorneio(null));
-    if (action === 'abrir-reservas') el.addEventListener('click', abrirReservasHandler);
-    if (action === 'voltar-lobby-de-reservas') el.addEventListener('click', sairReservasHandler);
+    if (action === 'abrir-reservas') el.addEventListener('click', () => { appSidebarAberta = false; abrirReservasHandler(); });
+    if (action === 'voltar-lobby-de-reservas') el.addEventListener('click', () => { appSidebarAberta = false; sairReservasHandler(); });
     if (action === 'reserva-sel-data') el.addEventListener('click', () => { selectedReservaData = el.dataset.data; reservaFlash = null; render(); });
     if (action === 'reserva-data-livre') el.addEventListener('change', () => { if (el.value) { selectedReservaData = el.value; reservaFlash = null; render(); } });
     if (action === 'reserva-abrir') el.addEventListener('click', () => abrirModalNovaReserva(el.dataset.data, el.dataset.quadra, el.dataset.horario));
@@ -3192,6 +3208,7 @@ function renderReservas() {
     <header class="hp-header">
       <div class="hp-header-inner">
         <div class="hp-brand">
+          ${renderBotaoAppSidebar()}
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
           <div><div class="hp-name">RESERVAR QUADRA</div><div class="hp-live"><span class="dot"></span> agenda do clube</div></div>
         </div>
