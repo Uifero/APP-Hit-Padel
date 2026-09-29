@@ -310,6 +310,7 @@ function pixSalvarHandler() {
   if (!chave) { alert('Preencha a chave Pix.'); return; }
   if (!nome) { alert('Preencha o nome do recebedor.'); return; }
   if (!cidade) { alert('Preencha a cidade.'); return; }
+  marcarCamposComoSalvos('pix-chave', 'pix-nome', 'pix-cidade');
   set(pixConfigRef, { chave, nome, cidade }).catch((e) => { console.error('Falha ao salvar chave Pix', e); alert('Erro ao salvar a chave Pix. Tente de novo.'); });
 }
 
@@ -453,6 +454,7 @@ function render() {
   const maxCourts = Math.max(1, Math.floor(catPlayers.length / 4)) || 1;
   const ocultoDoPublico = !isAdmin && !state.visivelPublico;
 
+  const camposEditados = capturarCamposEditados();
   root.innerHTML = `
     ${renderAppSidebar()}
     <div class="app-content-with-sidebar">
@@ -493,6 +495,7 @@ function render() {
     </div>
   `;
   bindEvents();
+  restaurarCamposEditados(camposEditados);
 }
 
 function renderModoTV(catKey) {
@@ -762,6 +765,7 @@ function renderLobby() {
   const visiveis = isAdmin ? todos : todos.filter((t) => t.visivelPublico);
   const ativos = visiveis.filter((t) => !t.encerrado);
   const encerrados = visiveis.filter((t) => t.encerrado);
+  const camposEditados = capturarCamposEditados();
   root.innerHTML = `
     ${renderAppSidebar()}
     <div class="app-content-with-sidebar">
@@ -793,6 +797,7 @@ function renderLobby() {
     </div>
   `;
   bindEvents();
+  restaurarCamposEditados(camposEditados);
 }
 
 function renderInscricaoPublica() {
@@ -2398,6 +2403,7 @@ function setTipoHandler(tipo) {
 function addCategoria(name) {
   name = name.trim();
   if (!name || state.categorias.includes(name)) return;
+  esvaziarCampos('new-cat');
   persist({ ...state, categorias: [...state.categorias, name] });
 }
 function addCategoriaHandler() {
@@ -2413,6 +2419,7 @@ function addCameraAoVivoHandler() {
   const nome = (input.value || '').trim();
   if (!nome) return;
   const nova = { id: uid(), nome, youtubeId: '', ativa: false };
+  esvaziarCampos('new-camera-nome');
   persist({ ...state, camerasAoVivo: [...(state.camerasAoVivo || []), nova] });
 }
 function setCameraLinkHandler(id, valor) {
@@ -2464,6 +2471,7 @@ function addPlayerHandler() {
   const filaEspera = categoriaLotada('players', catKey);
   const novoJogador = { id: uid(), name, categoria, confirmada: !temValor && !filaEspera, oculto: false, ...dadosPagamentoNaInscricao() };
   if (filaEspera) novoJogador.filaEspera = true;
+  esvaziarCampos('new-player');
   persist({ ...state, players: [...state.players, novoJogador] });
   lembrarAtleta(name, '');
 }
@@ -2482,6 +2490,7 @@ function addTeamHandler() {
   const filaEspera = categoriaLotada('teams', catKey);
   const novaDupla = { id: uid(), name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: !temValor && !filaEspera, oculto: false, ...dadosPagamentoNaInscricao() };
   if (filaEspera) novaDupla.filaEspera = true;
+  esvaziarCampos('new-team-j1', 'new-team-tel1', 'new-team-j2', 'new-team-tel2', 'new-team-sem-parceiro');
   persist({ ...state, teams: [...state.teams, novaDupla] });
   lembrarAtleta(j1, tel1);
   if (j2) lembrarAtleta(j2, tel2);
@@ -2607,9 +2616,9 @@ function pubAddPlayerHandler() {
   const novoJogador = { id: novoId, name, telefone, categoria, confirmada: false, oculto: false };
   if (filaEspera) novoJogador.filaEspera = true;
   if (valor > 0) { novoJogador.valor = valor; novoJogador.statusPagamento = 'pendente'; }
+  nameInput.value = ''; phoneInput.value = ''; // antes de gravar: o persist redesenha na hora
   persist({ ...state, players: [...state.players, novoJogador] });
   lembrarAtleta(name, telefone);
-  nameInput.value = ''; phoneInput.value = '';
   if (valor > 0) {
     abrirPagamento('players', novoId);
   } else {
@@ -2636,14 +2645,10 @@ function pubAddTeamHandler() {
   const novaDupla = { id: novoId, name, jogador1: j1, telefone1: tel1, jogador2: j2, telefone2: tel2, semParceiro, categoria, confirmada: false, oculto: false };
   if (filaEspera) novaDupla.filaEspera = true;
   if (valor > 0) { novaDupla.valor = valor; novaDupla.statusPagamento = 'pendente'; }
+  esvaziarCampos('pub-team-j1', 'pub-team-tel1', 'pub-team-j2', 'pub-team-tel2', 'pub-team-sem-parceiro'); // antes de gravar: o persist redesenha na hora
   persist({ ...state, teams: [...state.teams, novaDupla] });
   lembrarAtleta(j1, tel1);
   if (j2) lembrarAtleta(j2, tel2);
-  document.getElementById('pub-team-j1').value = '';
-  document.getElementById('pub-team-tel1').value = '';
-  document.getElementById('pub-team-j2').value = '';
-  document.getElementById('pub-team-tel2').value = '';
-  document.getElementById('pub-team-sem-parceiro').checked = false;
   if (valor > 0) {
     abrirPagamento('teams', novoId);
   } else {
@@ -3202,15 +3207,42 @@ function quadraReservaNome(quadraId) {
 }
 
 // ---- Não perder o que está sendo digitado quando a tela se redesenha ----
-// A tela de Quadras é redesenhada inteira a cada novidade do banco (uma reserva nova, outro admin
-// salvando...). Antes de redesenhar, guardamos os campos que a pessoa MEXEU e ainda não salvou
-// (valor ≠ valor com que o campo foi desenhado) e devolvemos depois — junto com o foco e o cursor.
-// Campos que ninguém mexeu pegam normalmente o valor novo do banco. Handlers que salvam chamam
-// marcarCamposComoSalvos() pra o campo voltar a seguir o banco no próximo redesenho.
+// As telas (Quadras, torneio, Central de Gestão) são redesenhadas inteiras a cada novidade do banco
+// (uma reserva/inscrição nova, outro admin salvando...). Antes de redesenhar, guardamos os campos que
+// a pessoa MEXEU e ainda não salvou (valor ≠ valor com que o campo foi desenhado) e devolvemos
+// depois — junto com o foco e o cursor. Campos que ninguém mexeu pegam o valor novo do banco.
+// Quem salva precisa avisar: campos que gravam sozinhos ao sair (CAMPOS_QUE_SALVAM_AO_MUDAR) são
+// marcados como salvos automaticamente; botões que salvam chamam marcarCamposComoSalvos(), e botões
+// que "consomem" o campo (adicionar jogadora, categoria...) esvaziam o campo ANTES de gravar.
 function chaveDoCampo(el) {
   if (el.id) return '#' + el.id;
-  if (el.dataset.action && el.dataset.id) return el.dataset.action + '|' + el.dataset.id;
-  return null;
+  const tipo = el.dataset.action || (el.classList.contains('agendamento-data') ? 'agendamento-data' : el.classList.contains('agendamento-hora') ? 'agendamento-hora' : '');
+  if (!tipo) return null;
+  const qual = el.dataset.id ?? el.dataset.cat ?? el.dataset.idx ?? el.dataset.match ?? el.dataset.chave;
+  if (qual != null) return tipo + '|' + qual;
+  if (!el.dataset.action) return null;
+  // campo único sem identificador próprio (ex.: nome do torneio no cabeçalho): usa a posição
+  return tipo + '#' + [...root.querySelectorAll(`[data-action="${tipo}"]`)].indexOf(el);
+}
+// Campos que gravam no banco sozinhos no 'change' (ao sair do campo / escolher a data). Quando isso
+// acontece, o valor já está salvo: no próximo redesenho vale o do banco (que pode vir ajustado —
+// ex.: nº de quadras limitado ao máximo).
+const CAMPOS_QUE_SALVAM_AO_MUDAR = new Set(['rename', 'set-valor-inscricao', 'set-limite-categoria', 'set-data-inicio', 'set-data-fim',
+  'set-camera-link', 'set-courts', 'set-court-name', 'set-rounds', 'set-hora-inicio-torneio', 'set-duracao-jogo-min', 'set-pausa-inicio',
+  'set-pausa-fim', 'reserva-set-quadra-nome', 'reserva-data-livre', 'lobby-set-status', 'lobby-set-tipo']);
+// Fase de captura: roda ANTES do handler do próprio campo (que grava e redesenha na hora).
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLElement)) return;
+  if (CAMPOS_QUE_SALVAM_AO_MUDAR.has(el.dataset.action) || el.classList.contains('agendamento-data') || el.classList.contains('agendamento-hora')) marcarCamposComoSalvos(el);
+}, true);
+function esvaziarCampos(...ids) {
+  ids.forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.type === 'checkbox' || el.type === 'radio') el.checked = false;
+    else el.value = '';
+  });
 }
 function campoFoiEditado(el) {
   if (el.type === 'file') return !!(el.files && el.files.length);
@@ -3221,6 +3253,7 @@ function campoFoiEditado(el) {
 function capturarCamposEditados() {
   const campos = new Map();
   root.querySelectorAll('input, select, textarea').forEach((el) => {
+    if (el.type === 'password') return; // senha nunca é guardada
     const chave = chaveDoCampo(el);
     if (!chave || !campoFoiEditado(el)) return;
     campos.set(chave, { value: el.value, checked: el.checked, files: el.type === 'file' ? el.files : null });
@@ -3237,8 +3270,16 @@ function restaurarCamposEditados({ campos, chaveAtiva, selecao }) {
     const salvo = chave && campos.get(chave);
     if (!salvo) return;
     if (el.type === 'file') { try { el.files = salvo.files; } catch (e) { /* navegador sem suporte */ } }
-    else if (el.type === 'checkbox' || el.type === 'radio') el.checked = salvo.checked;
-    else el.value = salvo.value;
+    else if (el.type === 'checkbox' || el.type === 'radio') {
+      el.checked = salvo.checked;
+      // "sem parceiro(a)": reaplica o esconde/mostra do campo do parceiro (só visual, não grava nada)
+      if ((el.dataset.action || '').startsWith('toggle-sem-parceiro')) el.dispatchEvent(new Event('change'));
+    } else {
+      el.value = salvo.value;
+      // Reaplica o que a tela faz enquanto se digita (filtro da busca, prévia do limite de vagas,
+      // rascunho do placar). Handlers de 'input' não gravam no banco — só o 'change' grava.
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
   });
   if (!chaveAtiva) return;
   const el = [...root.querySelectorAll('input, select, textarea')].find((x) => chaveDoCampo(x) === chaveAtiva);
