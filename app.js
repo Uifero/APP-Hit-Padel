@@ -3201,9 +3201,66 @@ function quadraReservaNome(quadraId) {
   return q ? q.nome : 'Quadra removida';
 }
 
+// ---- Não perder o que está sendo digitado quando a tela se redesenha ----
+// A tela de Quadras é redesenhada inteira a cada novidade do banco (uma reserva nova, outro admin
+// salvando...). Antes de redesenhar, guardamos os campos que a pessoa MEXEU e ainda não salvou
+// (valor ≠ valor com que o campo foi desenhado) e devolvemos depois — junto com o foco e o cursor.
+// Campos que ninguém mexeu pegam normalmente o valor novo do banco. Handlers que salvam chamam
+// marcarCamposComoSalvos() pra o campo voltar a seguir o banco no próximo redesenho.
+function chaveDoCampo(el) {
+  if (el.id) return '#' + el.id;
+  if (el.dataset.action && el.dataset.id) return el.dataset.action + '|' + el.dataset.id;
+  return null;
+}
+function campoFoiEditado(el) {
+  if (el.type === 'file') return !!(el.files && el.files.length);
+  if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== el.defaultChecked;
+  if (el.tagName === 'SELECT') return [...el.options].some((o) => o.selected !== o.defaultSelected);
+  return el.value !== el.defaultValue;
+}
+function capturarCamposEditados() {
+  const campos = new Map();
+  root.querySelectorAll('input, select, textarea').forEach((el) => {
+    const chave = chaveDoCampo(el);
+    if (!chave || !campoFoiEditado(el)) return;
+    campos.set(chave, { value: el.value, checked: el.checked, files: el.type === 'file' ? el.files : null });
+  });
+  const ativo = document.activeElement;
+  const chaveAtiva = ativo && root.contains(ativo) ? chaveDoCampo(ativo) : null;
+  let selecao = null;
+  try { if (chaveAtiva) selecao = [ativo.selectionStart, ativo.selectionEnd]; } catch (e) { /* date/number não têm seleção */ }
+  return { campos, chaveAtiva, selecao };
+}
+function restaurarCamposEditados({ campos, chaveAtiva, selecao }) {
+  root.querySelectorAll('input, select, textarea').forEach((el) => {
+    const chave = chaveDoCampo(el);
+    const salvo = chave && campos.get(chave);
+    if (!salvo) return;
+    if (el.type === 'file') { try { el.files = salvo.files; } catch (e) { /* navegador sem suporte */ } }
+    else if (el.type === 'checkbox' || el.type === 'radio') el.checked = salvo.checked;
+    else el.value = salvo.value;
+  });
+  if (!chaveAtiva) return;
+  const el = [...root.querySelectorAll('input, select, textarea')].find((x) => chaveDoCampo(x) === chaveAtiva);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  try { if (selecao && selecao[0] != null) el.setSelectionRange(selecao[0], selecao[1]); } catch (e) { /* idem */ }
+}
+// O campo já foi salvo (ou consumido, como "nova quadra"): no próximo redesenho vale o que vier do banco.
+function marcarCamposComoSalvos(...ids) {
+  ids.forEach((id) => {
+    const el = typeof id === 'string' ? document.getElementById(id) : id;
+    if (!el) return;
+    if (el.tagName === 'SELECT') [...el.options].forEach((o) => { o.defaultSelected = o.selected; });
+    else if (el.type === 'checkbox' || el.type === 'radio') el.defaultChecked = el.checked;
+    else el.defaultValue = el.value;
+  });
+}
+
 function renderReservas() {
   const carregando = quadrasReserva === null || reservasData === null || reservasFixas === null;
   const quadras = quadrasReserva || [];
+  const camposEditados = capturarCamposEditados();
   root.innerHTML = `
     ${renderAppSidebar()}
     <div class="app-content-with-sidebar">
@@ -3233,6 +3290,7 @@ function renderReservas() {
     </div>
   `;
   bindEvents();
+  restaurarCamposEditados(camposEditados);
 }
 
 // Reservas que não aparecem em nenhuma grade atual — a quadra foi removida, ou o horário saiu da
@@ -3652,6 +3710,9 @@ async function criarReservaFixaHandler() {
     return;
   }
   lembrarAtleta(nome, telefone);
+  // Criado: o formulário volta vazio no próximo redesenho, em vez de manter o que foi digitado.
+  ['reserva-fixo-nome', 'reserva-fixo-telefone'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+  marcarCamposComoSalvos('reserva-fixo-nome', 'reserva-fixo-telefone', 'reserva-fixo-quadra', 'reserva-fixo-dia', 'reserva-fixo-horario');
   reservaFlash = `Horário fixo criado: ${nome} — toda ${diaNome}, ${horario}, ${quadra.nome}.`;
   render();
   setTimeout(() => { if (reservasView) { reservaFlash = null; render(); } }, 6000);
@@ -3741,12 +3802,15 @@ function addQuadraReservaHandler() {
   const input = document.getElementById('reserva-nova-quadra');
   const nome = (input?.value || '').trim();
   if (!nome) return;
+  input.value = '';
+  marcarCamposComoSalvos(input);
   const nova = [...(quadrasReserva || []), { id: uid(), nome }];
   set(ref(db, 'config/quadrasReserva'), nova).catch((e) => console.error('Falha ao adicionar quadra de reserva', e));
 }
 function renomearQuadraReservaHandler(id, valor) {
   const nome = (valor || '').trim();
   if (!nome) return;
+  marcarCamposComoSalvos([...document.querySelectorAll('[data-action="reserva-set-quadra-nome"]')].find((el) => el.dataset.id === id));
   const nova = (quadrasReserva || []).map((q) => q.id === id ? { ...q, nome } : q);
   set(ref(db, 'config/quadrasReserva'), nova).catch((e) => console.error('Falha ao renomear quadra de reserva', e));
 }
@@ -3760,12 +3824,14 @@ function salvarHorariosPadraoReservaHandler() {
   const fds = parseHorariosReserva(document.getElementById('reserva-horarios-fds')?.value);
   if (!semana.length) { alert('Informe pelo menos um horário pra dia de semana (formato HH:MM).'); return; }
   if (!fds.length) { alert('Informe pelo menos um horário pra fim de semana (formato HH:MM).'); return; }
+  marcarCamposComoSalvos('reserva-horarios-semana', 'reserva-horarios-fds');
   set(ref(db, 'config/reservaConfig'), { ...(reservaConfig || {}), horariosSemana: semana, horariosFimDeSemana: fds })
     .catch((e) => { console.error('Falha ao salvar horários padrão de reserva', e); alert('Erro ao salvar. Tente de novo.'); });
 }
 function salvarHorariosQuadraReservaHandler(id) {
   const semana = parseHorariosReserva(document.getElementById(`reserva-q-semana-${id}`)?.value);
   const fds = parseHorariosReserva(document.getElementById(`reserva-q-fds-${id}`)?.value);
+  marcarCamposComoSalvos(`reserva-q-semana-${id}`, `reserva-q-fds-${id}`);
   const nova = (quadrasReserva || []).map((q) => {
     if (q.id !== id) return q;
     const copia = { ...q };
