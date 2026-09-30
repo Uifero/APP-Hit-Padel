@@ -466,6 +466,7 @@ function render() {
           <div>
             ${isAdmin ? `<input class="hp-name-input" data-action="rename" value="${esc(state.name)}" />` : `<div class="hp-name">${esc(state.name)}</div>`}
             <div class="hp-live">${dataRangeTxt ? `<span>${esc(dataRangeTxt)}</span> · ` : ''}<span class="dot"></span> ao vivo</div>
+            ${renderContatosAjuda()}
           </div>
         </div>
         <div class="hp-header-actions">
@@ -757,6 +758,19 @@ function renderAppSidebar() {
 function renderBotaoAppSidebar() {
   return `<button class="app-sidebar-toggle" data-action="abrir-app-sidebar" title="Abrir menu (Torneios / Quadras)">☰</button>`;
 }
+// Contatos de ajuda no cabeçalho — visíveis pra todo mundo (admin e público), abrem conversa direta no WhatsApp.
+// A lista fica dentro da função (e não numa const solta no arquivo) porque o render() pode rodar antes
+// desta linha ser executada, quando o Firebase entrega dados do cache logo na carga do módulo.
+function renderContatosAjuda() {
+  const contatos = [
+    { nome: 'Cícero Sichinel', telefone: '(55) 99612-9801', whatsapp: '5555996129801' },
+    { nome: 'Miti', telefone: '(55) 99971-0090', whatsapp: '5555999710090' },
+  ];
+  const mensagem = encodeURIComponent('Olá! Vim pelo app Hit Padel');
+  return `<div class="hp-contatos">${contatos.map((c) =>
+    `<a class="hp-contato" href="https://wa.me/${c.whatsapp}?text=${mensagem}" target="_blank" rel="noopener" title="Falar no WhatsApp">📞 ${esc(c.nome)} · ${esc(c.telefone)}</a>`
+  ).join('')}</div>`;
+}
 
 function renderLobby() {
   const lista = torneiosList ? Object.entries(torneiosList).map(([id, t]) => ({ id, ...t })) : null;
@@ -774,7 +788,7 @@ function renderLobby() {
         <div class="hp-brand">
           ${renderBotaoAppSidebar()}
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
-          <div><div class="hp-live"><span class="dot"></span> ao vivo</div></div>
+          <div><div class="hp-live"><span class="dot"></span> ao vivo</div>${renderContatosAjuda()}</div>
         </div>
         <div class="hp-header-actions">
           <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
@@ -3310,7 +3324,7 @@ function renderReservas() {
         <div class="hp-brand">
           ${renderBotaoAppSidebar()}
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
-          <div><div class="hp-name">RESERVAR QUADRA</div><div class="hp-live"><span class="dot"></span> agenda do clube</div></div>
+          <div><div class="hp-name">RESERVAR QUADRA</div><div class="hp-live"><span class="dot"></span> agenda do clube</div>${renderContatosAjuda()}</div>
         </div>
         <div class="hp-header-actions">
           <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
