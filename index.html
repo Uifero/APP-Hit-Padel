@@ -33,12 +33,19 @@
   .hp-header{background:var(--navy);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;}
   .hp-header-inner{margin:0 auto;padding:12px 18px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;}
   @media (min-width:1000px){.hp-header-inner{padding:12px 32px;}}
-  .hp-brand{display:flex;align-items:center;gap:10px;min-width:0;}
-  .hp-logo{height:72px;width:auto;display:block;flex-shrink:0;}
+  .hp-brand{flex:1 1 auto;display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;min-width:0;}
+  .hp-brand > div{flex:1 1 220px;min-width:0;}
+  /* logo.png é quadrado (640x640) mas a arte ocupa só a faixa do meio: o recorte (aspect-ratio + cover)
+     tira a sobra azul de cima e de baixo, então a largura vira o tamanho real visível do logo */
+  .hp-logo{width:440px;max-width:100%;height:auto;aspect-ratio:640/206;object-fit:cover;display:block;flex-shrink:0;}
+  /* celular: o logo ocupa a linha toda ao lado do ☰ (40px do botão + 16px de espaço) */
+  @media (max-width:640px){
+    .hp-brand{flex-basis:100%;}
+    .hp-logo{width:min(440px, calc(100% - 56px));max-width:none;}
+  }
   .hp-name{font-family:'Bebas Neue',sans-serif;font-size:30px;color:var(--yellow);}
   .hp-name-input{font-family:'Bebas Neue',sans-serif;font-size:30px;background:transparent;color:var(--chalk);border:none;border-bottom:1px dashed var(--line);outline:none;width:100%;}
   @media (max-width:480px){
-    .hp-logo{height:44px;}
     .hp-name,.hp-name-input{font-size:20px;}
   }
   .hp-live{font-size:11px;opacity:.7;display:flex;align-items:center;gap:5px;}

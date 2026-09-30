@@ -774,7 +774,7 @@ function renderLobby() {
         <div class="hp-brand">
           ${renderBotaoAppSidebar()}
           <img class="hp-logo" src="./logo.png" alt="Hit Padel Tuparendi" />
-          <div><div class="hp-name">HIT PADEL</div><div class="hp-live"><span class="dot"></span> ao vivo</div></div>
+          <div><div class="hp-live"><span class="dot"></span> ao vivo</div></div>
         </div>
         <div class="hp-header-actions">
           <button class="hp-admin-btn ${isAdmin ? 'on' : ''}" data-action="toggle-admin">${isAdmin ? 'Admin' : 'Ver como admin'}</button>
