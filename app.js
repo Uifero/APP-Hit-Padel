@@ -2023,6 +2023,12 @@ function bindEvents() {
     if (action === 'reserva-fixos-toggle') el.addEventListener('click', () => { reservaFixasAberto = !reservaFixasAberto; reservaFixoErroMsg = null; render(); });
     if (action === 'reserva-fixo-criar') el.addEventListener('click', criarReservaFixaHandler);
     if (action === 'reserva-fixo-cancelar') el.addEventListener('click', () => cancelarReservaFixaHandler(el.dataset.quadra, Number(el.dataset.dia), el.dataset.horario));
+    if (action === 'reserva-fixo-liberar-dia') el.addEventListener('click', () => liberarDiaReservaFixaHandler(el.dataset.data, el.dataset.quadra, Number(el.dataset.dia), el.dataset.horario));
+    if (action === 'reserva-fixo-restaurar-dia') el.addEventListener('click', (e) => {
+      // O botão fica dentro da célula "Livre", que abre o modal de reserva — não deixa o clique subir.
+      e.stopPropagation();
+      restaurarDiaReservaFixaHandler(el.dataset.data, el.dataset.quadra, Number(el.dataset.dia), el.dataset.horario);
+    });
     if (action === 'abrir-torneio') el.addEventListener('click', () => selecionarTorneio(el.dataset.id));
     if (action === 'publicar-torneio') el.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -3173,20 +3179,34 @@ function reservaDe(data, quadraId, horario) {
 // hora de montar a grade (nada é gravado por semana). Cancelar = apagar o nó, libera todas as semanas.
 const DIAS_SEMANA_NOMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 function reservaFixaPath(quadraId, diaSemana, horario) { return `reservasFixas/${quadraId}/${diaSemana}/${horario}`; }
+// "Liberar só este dia": a data fica guardada dentro da própria regra (excecoes/{data} = true),
+// então some junto quando o horário fixo inteiro é cancelado.
+function reservaFixaExcecaoPath(quadraId, diaSemana, horario, data) { return `${reservaFixaPath(quadraId, diaSemana, horario)}/excecoes/${data}`; }
 function diaSemanaDe(iso) { return new Date(iso + 'T12:00:00').getDay(); }
 function isoDeTimestamp(ts) {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 // Regra fixa que ocupa esse slot na data pedida (ou null). Só vale a partir do dia em que foi criada,
-// pra não "sujar" o histórico de datas anteriores. O Firebase pode devolver os dias 0-6 como array.
-function reservaFixaDe(data, quadraId, horario) {
+// pra não "sujar" o histórico de datas anteriores, e não vale nas datas liberadas (excecoes).
+// O Firebase pode devolver os dias 0-6 como array.
+function regraFixaDoSlot(data, quadraId, horario) {
   const porQuadra = reservasFixas && reservasFixas[quadraId];
   const porDia = porQuadra && porQuadra[diaSemanaDe(data)];
   const f = porDia && porDia[horario];
   if (!f) return null;
   if (f.criadoEm && data < isoDeTimestamp(f.criadoEm)) return null;
   return f;
+}
+function reservaFixaDe(data, quadraId, horario) {
+  const f = regraFixaDoSlot(data, quadraId, horario);
+  if (!f || (f.excecoes && f.excecoes[data])) return null;
+  return f;
+}
+// Regra fixa que foi liberada só nessa data (pra oferecer "voltar a ser fixo"), ou null.
+function excecaoFixaDe(data, quadraId, horario) {
+  const f = regraFixaDoSlot(data, quadraId, horario);
+  return f && f.excecoes && f.excecoes[data] ? f : null;
 }
 // Lista plana de todas as regras fixas ativas, ordenada por dia da semana, horário e quadra.
 function listarReservasFixas() {
@@ -3507,10 +3527,12 @@ function renderHorariosFixos() {
         ${fixos.length ? fixos.map((f) => {
           const quadra = quadras.find((q) => q.id === f.quadraId);
           const naGrade = quadra && horariosDaQuadra(quadra, f.diaSemana === 0 || f.diaSemana === 6).horarios.includes(f.horario);
+          const liberados = Object.keys(f.excecoes || {}).filter((d) => f.excecoes[d] && d >= hojeISO()).sort();
           return `
           <div class="reserva-fora-item">
             <div><strong>${esc(f.nome || '—')}</strong>${f.telefone ? ` · ${esc(f.telefone)}` : ''}</div>
             <div class="reserva-cel-badge">Toda ${esc(DIAS_SEMANA_NOMES[f.diaSemana].toLowerCase())} · ${esc(f.horario)}–${esc(fimHorarioReserva(f.horario))} · ${esc(quadraReservaNome(f.quadraId))}${naGrade ? '' : ' · ⚠ fora da grade atual (não aparece na agenda)'}</div>
+            ${liberados.length ? `<div class="reserva-cel-badge">Liberado só em: ${esc(liberados.map(rotuloDataReserva).join(', '))}</div>` : ''}
             <div class="reserva-cel-acoes" style="justify-content:flex-start">
               <button class="btn-danger" data-action="reserva-fixo-cancelar" data-quadra="${esc(f.quadraId)}" data-dia="${f.diaSemana}" data-horario="${f.horario}">Cancelar horário fixo</button>
             </div>
@@ -3571,13 +3593,20 @@ function renderCelulaReserva(data, quadra, horario) {
       ${fixo.telefone ? `<div class="reserva-cel-tel">${esc(fixo.telefone)}</div>` : ''}
       <div class="reserva-cel-badge"><span class="reserva-tag-fixo">📌 Fixo</span> toda ${esc(DIAS_SEMANA_NOMES[dia].toLowerCase())}</div>
       <div class="reserva-cel-acoes">
+        <button data-action="reserva-fixo-liberar-dia" data-data="${data}" data-quadra="${esc(quadra.id)}" data-dia="${dia}" data-horario="${horario}">Liberar só este dia</button>
         <button class="btn-danger" data-action="reserva-fixo-cancelar" data-quadra="${esc(quadra.id)}" data-dia="${dia}" data-horario="${horario}">Cancelar horário fixo</button>
       </div>
     </td>`;
   }
   if (!r) {
     if (passado) return `<td class="reserva-cel reserva-cel-passado">—</td>`;
-    return `<td class="reserva-cel reserva-cel-livre" data-action="reserva-abrir" data-data="${data}" data-quadra="${esc(quadra.id)}" data-horario="${horario}">Livre</td>`;
+    // Admin: se está livre só porque o fixo foi liberado nesse dia, oferece desfazer.
+    const liberado = isAdmin ? excecaoFixaDe(data, quadra.id, horario) : null;
+    const desfazer = liberado ? `
+      <div class="reserva-cel-acoes">
+        <button data-action="reserva-fixo-restaurar-dia" data-data="${data}" data-quadra="${esc(quadra.id)}" data-dia="${diaSemanaDe(data)}" data-horario="${horario}">↩ Voltar a ser fixo de ${esc(liberado.nome || '—')}</button>
+      </div>` : '';
+    return `<td class="reserva-cel reserva-cel-livre" data-action="reserva-abrir" data-data="${data}" data-quadra="${esc(quadra.id)}" data-horario="${horario}">Livre${desfazer}</td>`;
   }
   const pend = r.status !== 'confirmada';
   if (!isAdmin) {
@@ -3778,6 +3807,23 @@ function cancelarReservaFixaHandler(quadraId, diaSemana, horario) {
   const quem = f && f.nome ? ` de "${f.nome}"` : '';
   if (!confirm(`Cancelar o horário fixo${quem} (toda ${DIAS_SEMANA_NOMES[diaSemana].toLowerCase()}, ${horario}, ${quadraReservaNome(quadraId)})?\n\nIsso libera o horário em TODAS as semanas, não só neste dia.`)) return;
   set(ref(db, reservaFixaPath(quadraId, diaSemana, horario)), null).catch((e) => { console.error('Falha ao cancelar horário fixo', e); alert('Erro ao cancelar. Tente de novo.'); });
+}
+// Libera o horário fixo só nessa data; nas outras semanas a regra continua ocupando o slot.
+function liberarDiaReservaFixaHandler(data, quadraId, diaSemana, horario) {
+  const f = reservasFixas && reservasFixas[quadraId] && reservasFixas[quadraId][diaSemana] && reservasFixas[quadraId][diaSemana][horario];
+  const quem = f && f.nome ? ` de "${f.nome}"` : '';
+  if (!confirm(`Liberar o horário${quem} só em ${rotuloDataReserva(data)} (${horario}, ${quadraReservaNome(quadraId)})?\n\nNas outras semanas ele continua fixo.`)) return;
+  set(ref(db, reservaFixaExcecaoPath(quadraId, diaSemana, horario, data)), true)
+    .then(() => {
+      reservaFlash = `Horário liberado só em ${rotuloDataReserva(data)}.`;
+      render();
+      setTimeout(() => { if (reservasView) { reservaFlash = null; render(); } }, 6000);
+    })
+    .catch((e) => { console.error('Falha ao liberar dia do horário fixo', e); alert('Erro ao liberar. Tente de novo.'); });
+}
+// Desfaz o "liberar só este dia" (sem confirmação: é só liberar de novo se quiser).
+function restaurarDiaReservaFixaHandler(data, quadraId, diaSemana, horario) {
+  set(ref(db, reservaFixaExcecaoPath(quadraId, diaSemana, horario, data)), null).catch((e) => { console.error('Falha ao restaurar horário fixo no dia', e); alert('Erro ao restaurar. Tente de novo.'); });
 }
 function toggleStatusReservaHandler(data, quadraId, horario) {
   const r = reservaDe(data, quadraId, horario);
