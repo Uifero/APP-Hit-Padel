@@ -27,6 +27,17 @@
     "tournament": {
       ".read": true,
       ".write": false
+    },
+    "avisos": {
+      ".read": true,
+      "$id": {
+        ".write": "!data.exists() && newData.exists()",
+        ".validate": "newData.hasChildren(['tipo','texto','criadoEm']) && newData.child('tipo').isString() && newData.child('tipo').val().length <= 40 && newData.child('texto').isString() && newData.child('texto').val().length <= 800",
+        "tipo": {},
+        "texto": {},
+        "criadoEm": {},
+        "$outro": { ".validate": false }
+      }
     }
   }
 }

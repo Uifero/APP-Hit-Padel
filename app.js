@@ -2579,6 +2579,14 @@ async function enviarComprovanteHandler(list, id, file) {
     const patch = { comprovantePath: caminho, comprovanteEnviadoEm: Date.now() };
     if (registro && registro.statusPagamento !== 'pago') patch.statusPagamento = 'aguardando_confirmacao';
     persist({ ...state, [list]: state[list].map((x) => x.id === id ? { ...x, ...patch } : x) });
+    const nomeInsc = (registro && registro.name) || 'Inscrição';
+    const tel = registro ? (list === 'teams' ? registro.telefone1 : registro.telefone) || '' : '';
+    registrarAviso('comprovante_inscricao', montarTextoAviso([
+      '📎 Comprovante de inscrição enviado',
+      `${nomeInsc}${tel ? ' · ' + tel : ''}`,
+      `Torneio: ${state.name || ''}${registro && registro.valor ? ' · ' + formatMoeda(registro.valor) : ''}`,
+      'Confirme o pagamento no app.',
+    ], '✅ Avisar o atleta que recebemos:', registro ? linkWhatsApp(tel, `Olá ${registro.name}! Recebemos seu comprovante da inscrição no torneio ${state.name || ''}. Vamos conferir e confirmar em breve.`) : ''));
   } catch (e) {
     console.error('Falha ao enviar comprovante', e);
     pubComprovanteErroMsg = 'Não foi possível enviar o comprovante agora. Tente de novo em instantes.';
@@ -3183,6 +3191,32 @@ function reservaDe(data, quadraId, horario) {
   const porQuadra = porData && porData[quadraId];
   return (porQuadra && porQuadra[horario]) || null;
 }
+// Escreve um aviso curto em avisos/ — um script externo (Google Apps Script) lê e manda por WhatsApp.
+// Nunca pode atrapalhar o fluxo principal: falhou? só loga no console.
+function registrarAviso(tipo, texto) {
+  try {
+    set(ref(db, `avisos/${Date.now()}-${uid()}`), { tipo, texto: String(texto).slice(0, 800), criadoEm: Date.now() })
+      .catch((e) => console.error('Falha ao registrar aviso', e));
+  } catch (e) {
+    console.error('Falha ao registrar aviso', e);
+  }
+}
+// Link wa.me com mensagem pronta pro cliente. Devolve '' se o telefone não der pra usar.
+function linkWhatsApp(telefone, mensagem) {
+  const d = String(telefone || '').replace(/\D/g, '');
+  let n = '';
+  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) n = d;      // já veio com o código do Brasil
+  else if (d.length === 10 || d.length === 11) n = '55' + d;                  // DDD + número
+  return n ? `https://wa.me/${n}?text=${encodeURIComponent(mensagem)}` : '';
+}
+// Monta o texto do aviso: linhas vazias somem, e o link wa.me (se houver) fica sempre na última linha.
+// Se passar de 800 caracteres, corta o corpo (nunca o link); link longo demais sozinho é descartado.
+function montarTextoAviso(linhas, rotuloLink, link) {
+  const texto = linhas.filter(Boolean).join('\n');
+  const linhaLink = link ? `${rotuloLink} ${link}` : '';
+  if (!linhaLink || linhaLink.length > 700) return texto.slice(0, 800);
+  return `${texto.slice(0, 800 - linhaLink.length - 1)}\n${linhaLink}`;
+}
 // ---- Horário fixo: reservasFixas/{quadraId}/{diaSemana}/{horario} vale TODA semana, calculado na
 // hora de montar a grade (nada é gravado por semana). Cancelar = apagar o nó, libera todas as semanas.
 const DIAS_SEMANA_NOMES = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
@@ -3777,6 +3811,13 @@ async function criarReservaHandler() {
     return;
   }
   lembrarAtleta(nome, telefone);
+  const slotTxt = `${quadraReservaNome(quadraId)} · ${rotuloDataReserva(data)} · ${horario}–${fimHorarioReserva(horario)}`;
+  registrarAviso(isAdmin ? 'reserva_admin' : 'reserva', montarTextoAviso([
+    isAdmin ? '🎾 Reserva feita pelo admin' : '🎾 Nova reserva de quadra (cliente)',
+    `${nome}${telefone ? ' · ' + telefone : ''}`,
+    slotTxt,
+    `Status: ${reserva.status === 'confirmada' ? 'confirmada' : 'pendente'}`,
+  ], '✅ Confirmar ao cliente:', linkWhatsApp(telefone, `Olá ${nome}! Sua reserva no Hit Padel está anotada: ${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)}, ${horario}–${fimHorarioReserva(horario)}. Qualquer dúvida é só chamar.`)));
   if (isAdmin) {
     reservaModal = null;
     reservaFlash = `Reserva de ${nome} criada — ${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)} ${horario}.`;
@@ -3819,6 +3860,11 @@ async function criarReservaFixaHandler() {
     return;
   }
   lembrarAtleta(nome, telefone);
+  registrarAviso('horario_fixo', montarTextoAviso([
+    '📌 Horário fixo criado',
+    `${nome}${telefone ? ' · ' + telefone : ''}`,
+    `Toda ${diaNome} · ${horario}–${fimHorarioReserva(horario)} · ${quadra.nome}`,
+  ], '✅ Confirmar ao cliente:', linkWhatsApp(telefone, `Olá ${nome}! Seu horário fixo no Hit Padel está anotado: toda ${diaNome}, ${horario}, ${quadra.nome}.`)));
   // Criado: o formulário volta vazio no próximo redesenho, em vez de manter o que foi digitado.
   ['reserva-fixo-nome', 'reserva-fixo-telefone'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
   marcarCamposComoSalvos('reserva-fixo-nome', 'reserva-fixo-telefone', 'reserva-fixo-quadra', 'reserva-fixo-dia', 'reserva-fixo-horario');
@@ -3831,7 +3877,17 @@ function cancelarReservaFixaHandler(quadraId, diaSemana, horario) {
   const f = reservasFixas && reservasFixas[quadraId] && reservasFixas[quadraId][diaSemana] && reservasFixas[quadraId][diaSemana][horario];
   const quem = f && f.nome ? ` de "${f.nome}"` : '';
   if (!confirm(`Cancelar o horário fixo${quem} (toda ${DIAS_SEMANA_NOMES[diaSemana].toLowerCase()}, ${horario}, ${quadraReservaNome(quadraId)})?\n\nIsso libera o horário em TODAS as semanas, não só neste dia.`)) return;
-  set(ref(db, reservaFixaPath(quadraId, diaSemana, horario)), null).catch((e) => { console.error('Falha ao cancelar horário fixo', e); alert('Erro ao cancelar. Tente de novo.'); });
+  set(ref(db, reservaFixaPath(quadraId, diaSemana, horario)), null)
+    .then(() => {
+      const dia = DIAS_SEMANA_NOMES[diaSemana].toLowerCase();
+      const nome = (f && f.nome) || '';
+      const telefone = (f && f.telefone) || '';
+      registrarAviso('horario_fixo_cancelado', montarTextoAviso([
+        '❌ Horário fixo cancelado (todas as semanas)',
+        `${nome}${telefone ? ' · ' + telefone : ''}`,
+        `Toda ${dia} · ${horario} · ${quadraReservaNome(quadraId)}`,
+      ], 'Avisar o cliente:', linkWhatsApp(telefone, `Olá ${nome}! Seu horário fixo no Hit Padel (toda ${dia}, ${horario}, ${quadraReservaNome(quadraId)}) foi cancelado. Qualquer dúvida é só chamar.`)));
+    }, (e) => { console.error('Falha ao cancelar horário fixo', e); alert('Erro ao cancelar. Tente de novo.'); });
 }
 // Libera o horário fixo só nessa data; nas outras semanas a regra continua ocupando o slot.
 function liberarDiaReservaFixaHandler(data, quadraId, diaSemana, horario) {
@@ -3843,6 +3899,13 @@ function liberarDiaReservaFixaHandler(data, quadraId, diaSemana, horario) {
       reservaFlash = `Horário liberado só em ${rotuloDataReserva(data)}.`;
       render();
       setTimeout(() => { if (reservasView) { reservaFlash = null; render(); } }, 6000);
+      const nome = (f && f.nome) || '';
+      const telefone = (f && f.telefone) || '';
+      registrarAviso('horario_fixo_liberado_dia', montarTextoAviso([
+        `↩ Horário fixo liberado só em ${rotuloDataReserva(data)}`,
+        `${nome}${telefone ? ' · ' + telefone : ''}`,
+        `${quadraReservaNome(quadraId)} · ${horario}`,
+      ], 'Avisar o cliente:', linkWhatsApp(telefone, `Olá ${nome}! Seu horário fixo no Hit Padel não vai valer em ${rotuloDataReserva(data)} (${horario}, ${quadraReservaNome(quadraId)}). Nas outras semanas continua normal.`)));
     })
     .catch((e) => { console.error('Falha ao liberar dia do horário fixo', e); alert('Erro ao liberar. Tente de novo.'); });
 }
@@ -3858,7 +3921,16 @@ function toggleStatusReservaHandler(data, quadraId, horario) {
 }
 function cancelarReservaHandler(data, quadraId, horario, nome) {
   if (!confirm(`Cancelar a reserva${nome ? ` de "${nome}"` : ''} em ${quadraReservaNome(quadraId)} (${rotuloDataReserva(data)} ${horario})? O horário volta a ficar livre.`)) return;
-  set(ref(db, reservaPath(data, quadraId, horario)), null).catch((e) => console.error('Falha ao cancelar reserva', e));
+  const r = reservaDe(data, quadraId, horario); // lido antes: depois de apagar não existe mais
+  set(ref(db, reservaPath(data, quadraId, horario)), null)
+    .then(() => {
+      if (!r) return;
+      registrarAviso('reserva_cancelada', montarTextoAviso([
+        '❌ Reserva cancelada',
+        `${r.nome || ''}${r.telefone ? ' · ' + r.telefone : ''}`,
+        `${quadraReservaNome(quadraId)} · ${rotuloDataReserva(data)} · ${horario}–${fimHorarioReserva(horario)}`,
+      ], 'Avisar o cliente:', linkWhatsApp(r.telefone, `Olá ${r.nome || ''}! Sua reserva (${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)}, ${horario}) foi cancelada. Qualquer dúvida é só chamar.`)));
+    }, (e) => console.error('Falha ao cancelar reserva', e));
 }
 // Admin: edita nome/telefone/status e, se quiser, move a reserva pra outra quadra/data/horário
 // (grava no novo slot e apaga o antigo). Bloqueia se o slot de destino já estiver ocupado.
@@ -3916,7 +3988,14 @@ async function enviarComprovanteReservaHandler(file) {
     const dataUrl = await arquivoParaDataUrl(arquivo);
     await set(ref(db, 'comprovantes/reservas/' + id), { dataUrl, contentType: arquivo.type || file.type, enviadoEm: Date.now() });
     const r = reservaDe(data, quadraId, horario);
-    if (r) await set(ref(db, reservaPath(data, quadraId, horario)), { ...r, comprovante: true, comprovanteEnviadoEm: Date.now() });
+    if (r) {
+      await set(ref(db, reservaPath(data, quadraId, horario)), { ...r, comprovante: true, comprovanteEnviadoEm: Date.now() });
+      registrarAviso('comprovante_reserva', montarTextoAviso([
+        '📎 Comprovante de reserva enviado',
+        `${r.nome || ''}${r.telefone ? ' · ' + r.telefone : ''} · ${quadraReservaNome(quadraId)} · ${rotuloDataReserva(data)} · ${horario}`,
+        'Confirme o pagamento no app.',
+      ], '✅ Avisar o cliente que recebemos:', linkWhatsApp(r.telefone, `Olá ${r.nome || ''}! Recebemos seu comprovante da reserva (${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)}, ${horario}). Vamos conferir e confirmar em breve.`)));
+    }
   } catch (e) {
     console.error('Falha ao enviar comprovante da reserva', e);
     reservaErroMsg = 'Não foi possível enviar o comprovante agora. Tente de novo.';
