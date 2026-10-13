@@ -10,6 +10,7 @@ import {
   generateEliminationFromGroups, allGroupMatchesScored,
   horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
   reordenarPorDescanso, maiorSequenciaSemFolga, moverRodadasMenoresPraFim,
+  horariosDoDia, CHAVES_DIA_SEMANA,
 } from '../scheduling.js';
 
 const players = (n) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: `Jogadora ${i + 1}` }));
@@ -485,5 +486,63 @@ describe('moverRodadasMenoresPraFim', () => {
     const tamanhos = rounds.map((r) => r.matches.length);
     const maxJogos = Math.max(...tamanhos);
     tamanhos.slice(0, -1).forEach((t) => assert.equal(t, maxJogos, 'só a última rodada pode ter menos jogos que as demais'));
+  });
+});
+
+describe('horariosDoDia (grade de reserva por dia da semana)', () => {
+  const SEMANA = ['09:00', '10:30', '12:00'];
+  const FDS = ['09:00', '13:30'];
+  const base = { padraoClubeSemana: SEMANA, padraoClubeFds: FDS };
+  const quadraSemLista = { id: 'q1', nome: 'Quadra 01' };
+
+  it('sem nada configurado, cai no padrão de dia de semana do clube como hoje', () => {
+    for (const diaSemana of [1, 2, 3, 4, 5]) {
+      const r = horariosDoDia({ ...base, configHorariosPorDia: undefined, quadra: quadraSemLista, diaSemana });
+      assert.deepEqual(r, { horarios: SEMANA, proprio: false, origem: 'padrao' });
+    }
+    assert.deepEqual(horariosDoDia({ ...base, quadra: quadraSemLista, diaSemana: 6 }).horarios, FDS);
+  });
+
+  it('lista da terça vale na terça e não na segunda', () => {
+    const configHorariosPorDia = { ter: ['13:00', '10:00', '11:30'] };
+    const ter = horariosDoDia({ ...base, configHorariosPorDia, quadra: quadraSemLista, diaSemana: 2 });
+    assert.deepEqual(ter, { horarios: ['10:00', '11:30', '13:00'], proprio: false, origem: 'dia' });
+    const seg = horariosDoDia({ ...base, configHorariosPorDia, quadra: quadraSemLista, diaSemana: 1 });
+    assert.equal(seg.origem, 'padrao');
+    assert.deepEqual(seg.horarios, SEMANA);
+  });
+
+  it('lista própria da quadra (dia de semana) vence a lista do dia do clube', () => {
+    const quadra = { id: 'q2', horariosSemana: ['08:00', '19:00'] };
+    const r = horariosDoDia({ ...base, configHorariosPorDia: { ter: ['10:00'] }, quadra, diaSemana: 2 });
+    assert.deepEqual(r, { horarios: ['08:00', '19:00'], proprio: true, origem: 'quadra' });
+  });
+
+  it('fim de semana ignora as listas de seg a sex', () => {
+    const configHorariosPorDia = { seg: ['10:00'], ter: ['10:00'], qua: ['10:00'], qui: ['10:00'], sex: ['10:00'] };
+    for (const diaSemana of [0, 6]) {
+      const r = horariosDoDia({ ...base, configHorariosPorDia, quadra: quadraSemLista, diaSemana });
+      assert.deepEqual(r, { horarios: FDS, proprio: false, origem: 'padrao' });
+    }
+  });
+
+  it('entrada do dia vazia, ausente ou null cai no padrão', () => {
+    for (const configHorariosPorDia of [null, {}, { ter: [] }, { ter: null }, { ter: '' }, { seg: ['10:00'] }]) {
+      const r = horariosDoDia({ ...base, configHorariosPorDia, quadra: quadraSemLista, diaSemana: 2 });
+      assert.equal(r.origem, 'padrao');
+      assert.deepEqual(r.horarios, SEMANA);
+    }
+  });
+
+  it('formatos do Firebase (objeto no lugar de array, sobras) não quebram', () => {
+    const configHorariosPorDia = { ter: { 0: '11:30', 1: '10:00', 2: null }, qua: [undefined, '14:00', 'lixo', '14:00'], 3: ['07:00'] };
+    assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia, quadra: quadraSemLista, diaSemana: 2 }).horarios, ['10:00', '11:30']);
+    assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia, quadra: quadraSemLista, diaSemana: 3 }).horarios, ['14:00']);
+    assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia: ['x', 'y'], quadra: quadraSemLista, diaSemana: 2 }).origem, 'padrao');
+    assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia: 'quebrado', quadra: {}, diaSemana: 4 }).horarios, SEMANA);
+  });
+
+  it('CHAVES_DIA_SEMANA segue getDay() (0 = domingo)', () => {
+    assert.deepEqual(CHAVES_DIA_SEMANA, ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab']);
   });
 });

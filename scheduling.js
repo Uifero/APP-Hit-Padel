@@ -648,3 +648,33 @@ export function generateEliminationFromGroups(groups) {
   return bracket;
 }
 export function allGroupMatchesScored(groups) { return groups.every((g) => g.matches.every((m) => partidaJogada(m))); }
+
+// ---------- Reserva de quadra: horários de cada dia da semana ----------
+// config/reservaConfig/horariosPorDia usa chaves de 3 letras (nunca números: o Firebase transforma
+// objeto com chaves 0..6 em array e some com os "buracos"). Índice = getDay() (0 = domingo).
+export const CHAVES_DIA_SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+// Lista que veio do banco -> array de "HH:MM" ordenado e sem repetição. Tolera null, string solta e
+// objeto no lugar de array (sobra de como o Firebase às vezes devolve listas).
+export function listaHorariosLimpa(lista) {
+  if (!lista) return [];
+  const itens = Array.isArray(lista) ? lista : (typeof lista === 'object' ? Object.values(lista) : []);
+  return [...new Set(itens.filter((h) => typeof h === 'string' && /^\d{2}:\d{2}$/.test(h)))].sort();
+}
+// Lista do clube pra um dia (0-6) em horariosPorDia, ou [] se o dia não tem lista própria.
+export function horariosPorDiaDe(configHorariosPorDia, diaSemana) {
+  const chave = CHAVES_DIA_SEMANA[diaSemana];
+  if (!chave || !configHorariosPorDia || typeof configHorariosPorDia !== 'object') return [];
+  return listaHorariosLimpa(configHorariosPorDia[chave]);
+}
+// Quais horários de início uma quadra tem num dia da semana (0-6). O mais específico vence:
+//   1. lista própria da quadra pro tipo de dia (semana/fim de semana) -> origem 'quadra'
+//   2. lista do clube só pra aquele dia (horariosPorDia)               -> origem 'dia'
+//   3. padrão do clube de dia de semana / fim de semana                 -> origem 'padrao'
+export function horariosDoDia({ configHorariosPorDia, quadra, diaSemana, padraoClubeSemana, padraoClubeFds }) {
+  const isFds = diaSemana === 0 || diaSemana === 6;
+  const proprio = listaHorariosLimpa(quadra && (isFds ? quadra.horariosFimDeSemana : quadra.horariosSemana));
+  if (proprio.length) return { horarios: proprio, proprio: true, origem: 'quadra' };
+  const doDia = horariosPorDiaDe(configHorariosPorDia, diaSemana);
+  if (doDia.length) return { horarios: doDia, proprio: false, origem: 'dia' };
+  return { horarios: listaHorariosLimpa(isFds ? padraoClubeFds : padraoClubeSemana), proprio: false, origem: 'padrao' };
+}
