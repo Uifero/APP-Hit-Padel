@@ -121,7 +121,7 @@ let unsubReservaConfig = null;
 let selectedReservaData = null;   // 'YYYY-MM-DD'
 let reservaModal = null;          // { modo:'novo'|'pagamento'|'editar', data, quadraId, horario, id? }
 let reservaAvisoAberto = false;   // painel do sino "reservas fora da grade" (admin) aberto/fechado
-let reservaConfigAberta = true;   // bloco "Quadras e horários de reserva" (admin) aberto/fechado — começa aberto
+let reservaConfigAberta = false;  // bloco "Quadras e horários de reserva" (admin) aberto/fechado — começa fechado
 let reservaFlash = null;          // mensagem de sucesso curta (admin)
 let reservaEnviandoComprovante = false;
 let reservaErroMsg = null;
@@ -130,6 +130,14 @@ let reservasFixas = null;         // null = carregando | { [quadraId]: { [diaSem
 let unsubReservasFixas = null;
 let reservaFixasAberto = false;   // painel "Horários fixos" (admin) aberto/fechado
 let reservaFixoErroMsg = null;
+// Admin começando na tela de reservas (login ou entrada na tela): os 3 painéis vêm fechados, pra tela
+// não ficar poluída. Só nesses momentos — nunca nos redesenhos por novidade do banco. Não redesenha.
+function recolherPaineisAdminReservas() {
+  reservaConfigAberta = false;
+  reservaFixasAberto = false;
+  reservaAvisoAberto = false;
+  reservaFixoErroMsg = null;
+}
 
 const root = document.getElementById('root');
 
@@ -336,6 +344,7 @@ window.addEventListener('popstate', () => {
 onAuthStateChanged(auth, (user) => {
   const eraAdmin = isAdmin;
   isAdmin = !!user;
+  if (isAdmin && !eraAdmin) recolherPaineisAdminReservas();
   if (isAdmin && !eraAdmin && currentTournamentId) {
     selecionarTorneio(null); // sempre que vira admin (login manual ou sessão restaurada), volta pra Central de Gestão
   } else {
@@ -2976,6 +2985,7 @@ function saveBracketScoreHandler(matchId) {
 // de quem reservou.
 
 function entrarReservas() {
+  if (!reservasView) recolherPaineisAdminReservas(); // entrada de verdade na tela (pode ser chamada de novo já dentro dela)
   reservasView = true;
   if (!selectedReservaData || selectedReservaData < hojeISO()) selectedReservaData = hojeISO();
   if (!unsubQuadrasReserva) {
