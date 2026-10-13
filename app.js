@@ -109,6 +109,8 @@ const HORARIOS_RESERVA_SEMANA_PADRAO = ['09:00', '10:30', '12:00', '14:00', '15:
 const HORARIOS_RESERVA_FDS_PADRAO = ['09:00', '10:30', '12:00', '13:30', '15:00', '16:30', '18:00', '19:30', '21:00'];
 const DURACAO_RESERVA_MIN = 90;
 const DIAS_ANTECEDENCIA_RESERVA = 7; // mostra/permite de hoje até +7 dias
+// Dias que o admin pode configurar um por um (seg a sex, config/reservaConfig/horariosPorDia). O fim de semana segue a grade de sáb/dom.
+const DIAS_COM_HORARIO_PROPRIO = [1, 2, 3, 4, 5];
 let reservasView = false;
 let quadrasReserva = null;   // null = carregando | [{ id, nome, horariosSemana?, horariosFimDeSemana? }] (config/quadrasReserva)
 let reservasData = null;     // null = carregando | { [data]: { [quadraId]: { [horario]: reserva } } }
@@ -3095,8 +3097,6 @@ function horariosDaQuadra(quadra, diaSemana, horariosPorDia = (reservaConfig || 
     padraoClubeSemana: horariosReservaPadrao(false), padraoClubeFds: horariosReservaPadrao(true),
   });
 }
-// Dias que o admin pode configurar um por um na tela (seg a sex). O fim de semana segue a grade de sáb/dom.
-const DIAS_COM_HORARIO_PROPRIO = [1, 2, 3, 4, 5];
 // União de todos os horários que o clube usa em qualquer grade — pro seletor de horário na edição.
 function todosHorariosReservaPossiveis() {
   const set = new Set([
