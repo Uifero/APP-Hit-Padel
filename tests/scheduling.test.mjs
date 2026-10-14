@@ -10,7 +10,7 @@ import {
   generateEliminationFromGroups, allGroupMatchesScored,
   horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
   reordenarPorDescanso, maiorSequenciaSemFolga, moverRodadasMenoresPraFim,
-  horariosDoDia, CHAVES_DIA_SEMANA,
+  horariosDoDia, CHAVES_DIA_SEMANA, telefoneContatoValido,
 } from '../scheduling.js';
 
 const players = (n) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: `Jogadora ${i + 1}` }));
@@ -544,5 +544,19 @@ describe('horariosDoDia (grade de reserva por dia da semana)', () => {
 
   it('CHAVES_DIA_SEMANA segue getDay() (0 = domingo)', () => {
     assert.deepEqual(CHAVES_DIA_SEMANA, ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab']);
+  });
+});
+
+describe('telefoneContatoValido', () => {
+  it('aceita DDD + número, com ou sem o 55 do Brasil, com ou sem máscara', () => {
+    for (const tel of ['55996129801', '(55) 99612-9801', '5555996129801', '+55 55 99612-9801', '555596129801', '5596129801']) {
+      assert.equal(telefoneContatoValido(tel), true, tel);
+    }
+  });
+
+  it('recusa vazio, curto demais, sem DDD, sem dígitos, longo demais e 12 dígitos sem 55', () => {
+    for (const tel of ['', null, undefined, '1234', '99612-9801', 'abc', '55559961298011', '119961298011', '   ', {}, []]) {
+      assert.equal(telefoneContatoValido(tel), false, String(tel));
+    }
   });
 });

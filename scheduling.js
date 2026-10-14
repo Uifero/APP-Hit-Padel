@@ -678,3 +678,12 @@ export function horariosDoDia({ configHorariosPorDia, quadra, diaSemana, padraoC
   if (doDia.length) return { horarios: doDia, proprio: false, origem: 'dia' };
   return { horarios: listaHorariosLimpa(isFds ? padraoClubeFds : padraoClubeSemana), proprio: false, origem: 'padrao' };
 }
+
+// ---------- Reserva de quadra: telefone de contato do cliente ----------
+// true se dá pra montar o link wa.me com esse telefone — mesma regra do linkWhatsApp (app.js):
+// só dígitos; 10 ou 11 (DDD + número) ou 12 ou 13 começando com 55 (código do Brasil já incluso).
+export function telefoneContatoValido(telefone) {
+  const d = String(telefone || '').replace(/\D/g, '');
+  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) return true;
+  return d.length === 10 || d.length === 11;
+}

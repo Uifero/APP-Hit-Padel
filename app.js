@@ -11,7 +11,7 @@ import {
   shuffleArr, generateGroups, computeGroupStandings, nextPow2, roundName, seedOrder,
   repairSameGroupClashes, propagateWinner, generateEliminationFromGroups, allGroupMatchesScored,
   horaParaMinutos, minutosParaHora, ajustarCursorParaPausa, maiorSequenciaSemFolga,
-  CHAVES_DIA_SEMANA, horariosPorDiaDe, horariosDoDia,
+  CHAVES_DIA_SEMANA, horariosPorDiaDe, horariosDoDia, telefoneContatoValido,
 } from './scheduling.js';
 
 
@@ -3762,8 +3762,10 @@ function renderReservaModal() {
       <div class="hint" style="text-align:left;margin-bottom:8px">${esc(tituloSlot)}</div>
       <label style="font-size:12px;opacity:.6">Nome</label>
       <input id="reserva-nome" list="atletas-datalist" placeholder="Nome de quem reserva" />
-      <label style="font-size:12px;opacity:.6">Telefone (whatsapp)</label>
-      <input id="reserva-telefone" type="tel" placeholder="Telefone pra contato" />
+      ${isAdmin ? `<label style="font-size:12px;opacity:.6">Telefone (whatsapp)</label>
+      <input id="reserva-telefone" type="tel" placeholder="Telefone pra contato" />` : `<label style="font-size:12px;opacity:.6">Telefone (whatsapp) *</label>
+      <input id="reserva-telefone" type="tel" inputmode="tel" autocomplete="tel" placeholder="Ex: (55) 99999-9999" />
+      <div class="hint" style="text-align:left">O clube usa esse número só pra confirmar sua reserva.</div>`}
       ${isAdmin
         ? `<label class="checkbox-row"><input type="checkbox" id="reserva-admin-confirmada" /> Já pago / confirmado (pagamento no balcão)</label>`
         : `<div class="hint" style="text-align:left;margin-top:8px">Depois de reservar aparece a chave Pix pra pagar e anexar o comprovante. A reserva fica pendente até o clube confirmar.</div>`}
@@ -3801,6 +3803,8 @@ async function criarReservaHandler() {
   const nome = (document.getElementById('reserva-nome')?.value || '').trim();
   const telefone = (document.getElementById('reserva-telefone')?.value || '').trim();
   if (!nome) { reservaErroMsg = 'Preencha o nome.'; render(); return; }
+  // Cliente precisa deixar um telefone que dê pra chamar no WhatsApp; admin continua opcional.
+  if (!isAdmin && !telefoneContatoValido(telefone)) { reservaErroMsg = 'Informe um telefone com DDD para contato. Ex: (55) 99999-9999'; render(); return; }
   if (slotReservaNoPassado(data, horario)) { reservaErroMsg = 'Esse horário já passou.'; render(); return; }
   if (reservaDe(data, quadraId, horario) || reservaFixaDe(data, quadraId, horario)) { reservaErroMsg = 'Esse horário acabou de ser reservado por outra pessoa.'; render(); return; }
   const confirmadaAdmin = isAdmin && !!document.getElementById('reserva-admin-confirmada')?.checked;
