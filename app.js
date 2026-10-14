@@ -2591,7 +2591,7 @@ async function enviarComprovanteHandler(list, id, file) {
     const nomeInsc = (registro && registro.name) || 'Inscrição';
     const tel = registro ? (list === 'teams' ? registro.telefone1 : registro.telefone) || '' : '';
     registrarAviso('comprovante_inscricao', montarTextoAviso([
-      '📎 Comprovante de inscrição enviado',
+      '📎 *COMPROVANTE DE INSCRIÇÃO* (enviado pelo atleta)',
       `${nomeInsc}${tel ? ' · ' + tel : ''}`,
       `Torneio: ${state.name || ''}${registro && registro.valor ? ' · ' + formatMoeda(registro.valor) : ''}`,
       'Confirme o pagamento no app.',
@@ -3827,10 +3827,10 @@ async function criarReservaHandler() {
   lembrarAtleta(nome, telefone);
   const slotTxt = `${quadraReservaNome(quadraId)} · ${rotuloDataReserva(data)} · ${horario}–${fimHorarioReserva(horario)}`;
   registrarAviso(isAdmin ? 'reserva_admin' : 'reserva', montarTextoAviso([
-    isAdmin ? '🎾 Reserva feita pelo admin' : '🎾 Nova reserva de quadra (cliente)',
+    isAdmin ? '🔵 *RESERVA DO ADMIN* (feita pelo clube)' : '🟢 *RESERVA DO CLIENTE* (feita pelo app)',
     `${nome}${telefone ? ' · ' + telefone : ''}`,
     slotTxt,
-    `Status: ${reserva.status === 'confirmada' ? 'confirmada' : 'pendente'}`,
+    !isAdmin ? 'Status: pendente — aguardando pagamento' : reserva.status === 'confirmada' ? 'Status: confirmada (pago no balcão)' : 'Status: pendente',
   ], '✅ Confirmar ao cliente:', linkWhatsApp(telefone, `Olá ${nome}! Sua reserva no Hit Padel está anotada: ${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)}, ${horario}–${fimHorarioReserva(horario)}. Qualquer dúvida é só chamar.`)));
   if (isAdmin) {
     reservaModal = null;
@@ -3875,7 +3875,7 @@ async function criarReservaFixaHandler() {
   }
   lembrarAtleta(nome, telefone);
   registrarAviso('horario_fixo', montarTextoAviso([
-    '📌 Horário fixo criado',
+    '📌 *HORÁRIO FIXO CRIADO* (feito pelo admin)',
     `${nome}${telefone ? ' · ' + telefone : ''}`,
     `Toda ${diaNome} · ${horario}–${fimHorarioReserva(horario)} · ${quadra.nome}`,
   ], '✅ Confirmar ao cliente:', linkWhatsApp(telefone, `Olá ${nome}! Seu horário fixo no Hit Padel está anotado: toda ${diaNome}, ${horario}, ${quadra.nome}.`)));
@@ -3897,7 +3897,7 @@ function cancelarReservaFixaHandler(quadraId, diaSemana, horario) {
       const nome = (f && f.nome) || '';
       const telefone = (f && f.telefone) || '';
       registrarAviso('horario_fixo_cancelado', montarTextoAviso([
-        '❌ Horário fixo cancelado (todas as semanas)',
+        '❌ *HORÁRIO FIXO CANCELADO* (pelo admin, todas as semanas)',
         `${nome}${telefone ? ' · ' + telefone : ''}`,
         `Toda ${dia} · ${horario} · ${quadraReservaNome(quadraId)}`,
       ], 'Avisar o cliente:', linkWhatsApp(telefone, `Olá ${nome}! Seu horário fixo no Hit Padel (toda ${dia}, ${horario}, ${quadraReservaNome(quadraId)}) foi cancelado. Qualquer dúvida é só chamar.`)));
@@ -3916,7 +3916,7 @@ function liberarDiaReservaFixaHandler(data, quadraId, diaSemana, horario) {
       const nome = (f && f.nome) || '';
       const telefone = (f && f.telefone) || '';
       registrarAviso('horario_fixo_liberado_dia', montarTextoAviso([
-        `↩ Horário fixo liberado só em ${rotuloDataReserva(data)}`,
+        `↩ *HORÁRIO FIXO LIBERADO SÓ EM ${rotuloDataReserva(data)}* (pelo admin)`,
         `${nome}${telefone ? ' · ' + telefone : ''}`,
         `${quadraReservaNome(quadraId)} · ${horario}`,
       ], 'Avisar o cliente:', linkWhatsApp(telefone, `Olá ${nome}! Seu horário fixo no Hit Padel não vai valer em ${rotuloDataReserva(data)} (${horario}, ${quadraReservaNome(quadraId)}). Nas outras semanas continua normal.`)));
@@ -3940,7 +3940,7 @@ function cancelarReservaHandler(data, quadraId, horario, nome) {
     .then(() => {
       if (!r) return;
       registrarAviso('reserva_cancelada', montarTextoAviso([
-        '❌ Reserva cancelada',
+        '❌ *RESERVA CANCELADA* (pelo admin)',
         `${r.nome || ''}${r.telefone ? ' · ' + r.telefone : ''}`,
         `${quadraReservaNome(quadraId)} · ${rotuloDataReserva(data)} · ${horario}–${fimHorarioReserva(horario)}`,
       ], 'Avisar o cliente:', linkWhatsApp(r.telefone, `Olá ${r.nome || ''}! Sua reserva (${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)}, ${horario}) foi cancelada. Qualquer dúvida é só chamar.`)));
@@ -4005,7 +4005,7 @@ async function enviarComprovanteReservaHandler(file) {
     if (r) {
       await set(ref(db, reservaPath(data, quadraId, horario)), { ...r, comprovante: true, comprovanteEnviadoEm: Date.now() });
       registrarAviso('comprovante_reserva', montarTextoAviso([
-        '📎 Comprovante de reserva enviado',
+        '📎 *COMPROVANTE DE RESERVA* (enviado pelo cliente)',
         `${r.nome || ''}${r.telefone ? ' · ' + r.telefone : ''} · ${quadraReservaNome(quadraId)} · ${rotuloDataReserva(data)} · ${horario}`,
         'Confirme o pagamento no app.',
       ], '✅ Avisar o cliente que recebemos:', linkWhatsApp(r.telefone, `Olá ${r.nome || ''}! Recebemos seu comprovante da reserva (${quadraReservaNome(quadraId)}, ${rotuloDataReserva(data)}, ${horario}). Vamos conferir e confirmar em breve.`)));
