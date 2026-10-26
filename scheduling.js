@@ -667,16 +667,40 @@ export function horariosPorDiaDe(configHorariosPorDia, diaSemana) {
   return listaHorariosLimpa(configHorariosPorDia[chave]);
 }
 // Quais horários de início uma quadra tem num dia da semana (0-6). O mais específico vence:
-//   1. lista própria da quadra pro tipo de dia (semana/fim de semana) -> origem 'quadra'
-//   2. lista do clube só pra aquele dia (horariosPorDia)               -> origem 'dia'
-//   3. padrão do clube de dia de semana / fim de semana                 -> origem 'padrao'
+//   1. lista da quadra só pra aquele dia (quadra.horariosPorDia)       -> origem 'quadra-dia'
+//   2. lista própria da quadra pro tipo de dia (semana/fim de semana) -> origem 'quadra' (formato antigo)
+//   3. lista do clube só pra aquele dia (horariosPorDia)               -> origem 'dia'
+//   4. padrão do clube de dia de semana / fim de semana                 -> origem 'padrao'
 export function horariosDoDia({ configHorariosPorDia, quadra, diaSemana, padraoClubeSemana, padraoClubeFds }) {
   const isFds = diaSemana === 0 || diaSemana === 6;
+  const daQuadraNoDia = horariosPorDiaDe(quadra && quadra.horariosPorDia, diaSemana);
+  if (daQuadraNoDia.length) return { horarios: daQuadraNoDia, proprio: true, origem: 'quadra-dia' };
   const proprio = listaHorariosLimpa(quadra && (isFds ? quadra.horariosFimDeSemana : quadra.horariosSemana));
   if (proprio.length) return { horarios: proprio, proprio: true, origem: 'quadra' };
   const doDia = horariosPorDiaDe(configHorariosPorDia, diaSemana);
   if (doDia.length) return { horarios: doDia, proprio: false, origem: 'dia' };
   return { horarios: listaHorariosLimpa(isFds ? padraoClubeFds : padraoClubeSemana), proprio: false, origem: 'padrao' };
+}
+// Só a lista PRÓPRIA da quadra num dia (0-6): a do dia (horariosPorDia), senão a antiga de
+// semana/fim de semana, senão []. É o que a tela "dia por dia" mostra preenchido em cada campo.
+export function horariosProprioDaQuadraNoDia(quadra, diaSemana) {
+  const r = horariosDoDia({ quadra, diaSemana });
+  return r.proprio ? r.horarios : [];
+}
+// Cópia da quadra com os horários "dia por dia" salvos ({ seg:[...], ... } só com os dias preenchidos).
+// Apaga as listas antigas de semana/fim de semana: a tela já mostrou o que elas valiam em cada dia,
+// então o que foi salvo é exatamente o que a quadra passa a ter (sem duas regras competindo).
+export function quadraComHorariosPorDia(quadra, horariosPorDia) {
+  const copia = { ...quadra };
+  delete copia.horariosSemana;
+  delete copia.horariosFimDeSemana;
+  const limpo = {};
+  CHAVES_DIA_SEMANA.forEach((chave, dia) => {
+    const lista = horariosPorDiaDe(horariosPorDia, dia);
+    if (lista.length) limpo[chave] = lista;
+  });
+  if (Object.keys(limpo).length) copia.horariosPorDia = limpo; else delete copia.horariosPorDia;
+  return copia;
 }
 
 // ---------- Reserva de quadra: telefone de contato do cliente ----------

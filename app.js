@@ -11,7 +11,7 @@ import {
   shuffleArr, generateGroups, computeGroupStandings, nextPow2, roundName, seedOrder,
   repairSameGroupClashes, propagateWinner, generateEliminationFromGroups, allGroupMatchesScored,
   horaParaMinutos, minutosParaHora, ajustarCursorParaPausa, maiorSequenciaSemFolga,
-  CHAVES_DIA_SEMANA, horariosPorDiaDe, horariosDoDia, telefoneContatoValido,
+  CHAVES_DIA_SEMANA, horariosPorDiaDe, horariosDoDia, horariosProprioDaQuadraNoDia, quadraComHorariosPorDia, telefoneContatoValido,
 } from './scheduling.js';
 
 
@@ -112,7 +112,7 @@ const DIAS_ANTECEDENCIA_RESERVA = 7; // mostra/permite de hoje até +7 dias
 // Dias que o admin pode configurar um por um (seg a sex, config/reservaConfig/horariosPorDia). O fim de semana segue a grade de sáb/dom.
 const DIAS_COM_HORARIO_PROPRIO = [1, 2, 3, 4, 5];
 let reservasView = false;
-let quadrasReserva = null;   // null = carregando | [{ id, nome, horariosSemana?, horariosFimDeSemana? }] (config/quadrasReserva)
+let quadrasReserva = null;   // null = carregando | [{ id, nome, horariosPorDia?:{ dom:[], seg:[], ... }, horariosSemana?, horariosFimDeSemana? }] (config/quadrasReserva)
 let reservasData = null;     // null = carregando | { [data]: { [quadraId]: { [horario]: reserva } } }
 let reservaConfig = {};      // config/reservaConfig — { horariosSemana:[], horariosFimDeSemana:[], horariosPorDia?:{ seg:[], ter:[], ... } } (padrões editáveis pelo admin)
 let unsubQuadrasReserva = null;
@@ -122,6 +122,7 @@ let selectedReservaData = null;   // 'YYYY-MM-DD'
 let reservaModal = null;          // { modo:'novo'|'pagamento'|'editar', data, quadraId, horario, id? }
 let reservaAvisoAberto = false;   // painel do sino "reservas fora da grade" (admin) aberto/fechado
 let reservaConfigAberta = false;  // bloco "Quadras e horários de reserva" (admin) aberto/fechado — começa fechado
+let reservaQuadraHorarioSel = null; // id da quadra escolhida em "Horários de cada quadra, dia por dia" (null = primeira)
 let reservaFlash = null;          // mensagem de sucesso curta (admin)
 let reservaEnviandoComprovante = false;
 let reservaErroMsg = null;
@@ -2028,7 +2029,8 @@ function bindEvents() {
     if (action === 'reserva-set-quadra-nome') el.addEventListener('change', () => renomearQuadraReservaHandler(el.dataset.id, el.value));
     if (action === 'reserva-salvar-horarios-padrao') el.addEventListener('click', salvarHorariosPadraoReservaHandler);
     if (action === 'reserva-salvar-horarios-dia') el.addEventListener('click', salvarHorariosPorDiaReservaHandler);
-    if (action === 'reserva-salvar-horarios-quadra') el.addEventListener('click', () => salvarHorariosQuadraReservaHandler(el.dataset.id));
+    if (action === 'reserva-horarios-quadra-sel') el.addEventListener('change', () => selecionarQuadraHorarioHandler(el));
+    if (action === 'reserva-salvar-horarios-quadra-dias') el.addEventListener('click', () => salvarHorariosQuadraDiasReservaHandler(el.dataset.id));
     if (action === 'reserva-aviso-toggle') el.addEventListener('click', () => { reservaAvisoAberto = !reservaAvisoAberto; render(); });
     if (action === 'reserva-config-toggle') el.addEventListener('click', toggleReservaConfigHandler);
     if (action === 'reserva-toggle-notif') el.addEventListener('click', toggleNotificacoesReservaHandler);
@@ -3106,9 +3108,10 @@ function horariosReservaPadrao(isFds) {
   if (Array.isArray(lista) && lista.length) return lista;
   return isFds ? HORARIOS_RESERVA_FDS_PADRAO : HORARIOS_RESERVA_SEMANA_PADRAO;
 }
-// Horários de UMA quadra num dia da semana (0-6): lista própria da quadra > lista do clube só pra
-// aquele dia (config/reservaConfig/horariosPorDia) > grade padrão. Ver horariosDoDia em scheduling.js.
-// `horariosPorDia` permite simular uma configuração ainda não salva (aviso antes de salvar).
+// Horários de UMA quadra num dia da semana (0-6): lista da quadra pra aquele dia > lista própria da
+// quadra (semana/fds, formato antigo) > lista do clube só pra aquele dia (config/reservaConfig/horariosPorDia)
+// > grade padrão. Ver horariosDoDia em scheduling.js. Pra simular uma configuração ainda não salva
+// (aviso antes de salvar): passe a quadra já alterada, ou `horariosPorDia` do clube alterado.
 function horariosDaQuadra(quadra, diaSemana, horariosPorDia = (reservaConfig || {}).horariosPorDia) {
   return horariosDoDia({
     configHorariosPorDia: horariosPorDia, quadra, diaSemana,
@@ -3125,6 +3128,7 @@ function todosHorariosReservaPossiveis() {
   (quadrasReserva || []).forEach((q) => {
     (q.horariosSemana || []).forEach((h) => set.add(h));
     (q.horariosFimDeSemana || []).forEach((h) => set.add(h));
+    CHAVES_DIA_SEMANA.forEach((_, dia) => horariosPorDiaDe(q.horariosPorDia, dia).forEach((h) => set.add(h)));
   });
   return [...set].sort();
 }
@@ -3511,28 +3515,74 @@ function renderGestaoQuadrasReserva() {
           </div>`).join('')}
         <button class="mode-btn" data-action="reserva-salvar-horarios-dia">Salvar horários dos dias</button>
 
-        <div class="hint" style="text-align:left;margin:16px 0 6px">Quadras — deixe os campos de horário em branco pra a quadra seguir os padrões acima:</div>
+        <div class="hint" style="text-align:left;margin:16px 0 6px"><strong>Quadras</strong> — o horário de cada quadra fica logo abaixo, em "Horários de cada quadra, dia por dia":</div>
         ${quadras.length ? quadras.map((q) => `
           <div class="reserva-quadra-config">
             <div class="reserva-quadra-gestao-item">
               <input value="${esc(q.nome)}" data-action="reserva-set-quadra-nome" data-id="${esc(q.id)}" />
               <button class="mode-btn btn-danger" data-action="reserva-remove-quadra" data-id="${esc(q.id)}" data-nome="${esc(q.nome)}">Remover</button>
             </div>
-            <div class="row2" style="margin-top:6px">
-              <div class="field"><label>Horário próprio — dia de semana</label><input id="reserva-q-semana-${esc(q.id)}" value="${esc(horariosReservaTexto(q.horariosSemana))}" placeholder="(usa o padrão)" /></div>
-              <div class="field"><label>Horário próprio — fim de semana</label><input id="reserva-q-fds-${esc(q.id)}" value="${esc(horariosReservaTexto(q.horariosFimDeSemana))}" placeholder="(usa o padrão)" /></div>
-            </div>
-            <button class="mode-btn" style="margin-top:4px" data-action="reserva-salvar-horarios-quadra" data-id="${esc(q.id)}">Salvar horários da ${esc(q.nome)}</button>
           </div>
         `).join('') : `<div class="hint">Nenhuma quadra cadastrada ainda — adicione a primeira abaixo.</div>`}
-        ${quadras.length ? `<div class="hint" style="text-align:left;margin-top:6px">Quadra com "Horário próprio — dia de semana" preenchido usa esse horário de segunda a sexta, ignorando os horários de cada dia acima.</div>` : ''}
         <div class="row" style="margin-top:10px">
           <input id="reserva-nova-quadra" placeholder="Nome da quadra (ex: Quadra 01)" />
           <button data-action="reserva-add-quadra">+</button>
         </div>
+
+        ${renderHorariosQuadraPorDia(quadras)}
       </div>` : ''}
     </section>
   `;
+}
+// Ordem dos dias na tela "dia por dia" (índices de DIAS_SEMANA_NOMES): segunda a sábado, domingo no fim.
+const DIAS_ORDEM_HORARIO_QUADRA = [1, 2, 3, 4, 5, 6, 0];
+// Quadra escolhida no seletor "dia por dia"; se ela foi removida (ou nada foi escolhido), a primeira.
+function quadraHorarioSelecionada() {
+  const quadras = quadrasReserva || [];
+  return quadras.find((q) => q.id === reservaQuadraHorarioSel) || quadras[0] || null;
+}
+function idCampoQuadraDia(quadraId, dia) { return `reserva-qd-${quadraId}-${CHAVES_DIA_SEMANA[dia]}`; }
+// Algum dos 7 campos da quadra está diferente do que está salvo? (mesma comparação normalizada do resto)
+function horariosQuadraDiaTemAlteracaoPendente(quadra) {
+  if (!quadra) return false;
+  return DIAS_ORDEM_HORARIO_QUADRA.some((dia) => {
+    const txt = document.getElementById(idCampoQuadraDia(quadra.id, dia))?.value;
+    return txt !== undefined && parseHorariosReserva(txt).join(',') !== horariosProprioDaQuadraNoDia(quadra, dia).join(',');
+  });
+}
+// Escolhe a quadra e digita os horários de cada dia. Campo preenchido = horário próprio da quadra
+// naquele dia; em branco = segue o clube (o placeholder mostra qual horário ela vai pegar).
+function renderHorariosQuadraPorDia(quadras) {
+  const q = quadraHorarioSelecionada();
+  return `
+    <div class="hint" style="text-align:left;margin:16px 0 4px"><strong>Horários de cada quadra, dia por dia</strong></div>
+    ${!q ? `<div class="hint" style="text-align:left">Cadastre uma quadra primeiro.</div>` : `
+      <div class="hint" style="text-align:left;margin-bottom:6px">Escolha a quadra e digite os horários de cada dia. Deixe em branco pra quadra seguir os horários do clube naquele dia.</div>
+      <div class="field">
+        <label>Quadra</label>
+        <select id="reserva-horarios-quadra-sel" data-action="reserva-horarios-quadra-sel">
+          ${quadras.map((x) => `<option value="${esc(x.id)}" ${x.id === q.id ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}
+        </select>
+      </div>
+      ${DIAS_ORDEM_HORARIO_QUADRA.map((dia) => `
+        <div class="field">
+          <label>${DIAS_SEMANA_NOMES[dia]}</label>
+          <input id="${esc(idCampoQuadraDia(q.id, dia))}" value="${esc(horariosReservaTexto(horariosProprioDaQuadraNoDia(q, dia)))}" placeholder="${esc(horariosReservaTexto(horariosDaQuadra(null, dia).horarios))} (padrão do clube)" />
+        </div>`).join('')}
+      <button class="mode-btn" data-action="reserva-salvar-horarios-quadra-dias" data-id="${esc(q.id)}">Salvar horários da ${esc(q.nome)}</button>
+    `}
+  `;
+}
+function selecionarQuadraHorarioHandler(el) {
+  const anterior = quadraHorarioSelecionada();
+  if (anterior && el.value !== anterior.id && horariosQuadraDiaTemAlteracaoPendente(anterior)
+    && !confirm('Você tem alterações não salvas nesta quadra. Trocar de quadra mesmo assim e perder essas alterações?')) {
+    el.value = anterior.id;
+    return;
+  }
+  reservaQuadraHorarioSel = el.value;
+  marcarCamposComoSalvos(el);
+  render();
 }
 // Algum campo do bloco "Quadras e horários de reserva" está diferente do que está salvo? Compara o que
 // está na tela com o banco na hora (em vez de marcar "sujo" ao digitar), porque a tela se redesenha a
@@ -3550,13 +3600,10 @@ function reservaConfigTemAlteracaoPendente() {
     return txt !== undefined && !mesmaLista(txt, horariosPorDiaDe(reservaConfig.horariosPorDia, dia));
   })) return true;
   if ((valor('reserva-nova-quadra') || '').trim()) return true;
+  if (horariosQuadraDiaTemAlteracaoPendente(quadraHorarioSelecionada())) return true;
   return (quadrasReserva || []).some((q) => {
     const nomeEl = [...document.querySelectorAll('[data-action="reserva-set-quadra-nome"]')].find((el) => el.dataset.id === q.id);
-    if (nomeEl && nomeEl.value.trim() && nomeEl.value.trim() !== q.nome) return true;
-    const qSemana = valor(`reserva-q-semana-${q.id}`);
-    if (qSemana !== undefined && !mesmaLista(qSemana, q.horariosSemana)) return true;
-    const qFds = valor(`reserva-q-fds-${q.id}`);
-    return qFds !== undefined && !mesmaLista(qFds, q.horariosFimDeSemana);
+    return !!(nomeEl && nomeEl.value.trim() && nomeEl.value.trim() !== q.nome);
   });
 }
 function toggleReservaConfigHandler() {
@@ -4075,17 +4122,29 @@ function salvarHorariosPorDiaReservaHandler() {
   set(ref(db, 'config/reservaConfig/horariosPorDia'), Object.keys(novo).length ? novo : null)
     .catch((e) => { console.error('Falha ao salvar horários de cada dia da semana', e); alert('Erro ao salvar. Tente de novo.'); });
 }
-function salvarHorariosQuadraReservaHandler(id) {
-  const semana = parseHorariosReserva(document.getElementById(`reserva-q-semana-${id}`)?.value);
-  const fds = parseHorariosReserva(document.getElementById(`reserva-q-fds-${id}`)?.value);
-  marcarCamposComoSalvos(`reserva-q-semana-${id}`, `reserva-q-fds-${id}`);
-  const nova = (quadrasReserva || []).map((q) => {
-    if (q.id !== id) return q;
-    const copia = { ...q };
-    if (semana.length) copia.horariosSemana = semana; else delete copia.horariosSemana;
-    if (fds.length) copia.horariosFimDeSemana = fds; else delete copia.horariosFimDeSemana;
-    return copia;
+// Grava os horários "dia por dia" de UMA quadra (config/quadrasReserva[].horariosPorDia) e apaga as
+// listas antigas de semana/fim de semana dela (ver quadraComHorariosPorDia). Não mexe nas outras quadras.
+// Nada é apagado: reservas/fixos dessa quadra que saírem da grade continuam salvos e aparecem no sino 🔔.
+function salvarHorariosQuadraDiasReservaHandler(id) {
+  const quadra = (quadrasReserva || []).find((q) => q.id === id);
+  if (!quadra) return;
+  const ids = DIAS_ORDEM_HORARIO_QUADRA.map((dia) => idCampoQuadraDia(id, dia));
+  const novo = {};
+  DIAS_ORDEM_HORARIO_QUADRA.forEach((dia) => {
+    const lista = parseHorariosReserva(document.getElementById(idCampoQuadraDia(id, dia))?.value);
+    if (lista.length) novo[CHAVES_DIA_SEMANA[dia]] = lista;
   });
+  const atualizada = quadraComHorariosPorDia(quadra, novo);
+  // Quantas reservas futuras / horários fixos desta quadra estão na grade hoje e saem dela com a mudança.
+  const saiDaGrade = (dia, horario) => horariosDaQuadra(quadra, dia).horarios.includes(horario)
+    && !horariosDaQuadra(atualizada, dia).horarios.includes(horario);
+  const reservasAfetadas = coletarReservasFlat()
+    .filter((r) => r.quadraId === id && r.data >= hojeISO() && saiDaGrade(diaSemanaDe(r.data), r.horario)).length;
+  const fixosAfetados = listarReservasFixas().filter((f) => f.quadraId === id && saiDaGrade(f.diaSemana, f.horario)).length;
+  if ((reservasAfetadas || fixosAfetados)
+    && !confirm(`Com essa mudança, ${reservasAfetadas} reserva(s) e ${fixosAfetados} horário(s) fixo(s) da ${quadra.nome} ficam fora da grade. Eles continuam salvos e aparecem no aviso 🔔 pra você mover ou cancelar. Salvar mesmo assim?`)) return;
+  marcarCamposComoSalvos(...ids);
+  const nova = (quadrasReserva || []).map((q) => q.id === id ? atualizada : q);
   set(ref(db, 'config/quadrasReserva'), nova).catch((e) => { console.error('Falha ao salvar horários da quadra', e); alert('Erro ao salvar. Tente de novo.'); });
 }
 

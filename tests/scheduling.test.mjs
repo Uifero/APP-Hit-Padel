@@ -11,6 +11,7 @@ import {
   horaParaMinutos, minutosParaHora, ajustarCursorParaPausa,
   reordenarPorDescanso, maiorSequenciaSemFolga, moverRodadasMenoresPraFim,
   horariosDoDia, CHAVES_DIA_SEMANA, telefoneContatoValido,
+  horariosProprioDaQuadraNoDia, quadraComHorariosPorDia,
 } from '../scheduling.js';
 
 const players = (n) => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: `Jogadora ${i + 1}` }));
@@ -544,6 +545,109 @@ describe('horariosDoDia (grade de reserva por dia da semana)', () => {
 
   it('CHAVES_DIA_SEMANA segue getDay() (0 = domingo)', () => {
     assert.deepEqual(CHAVES_DIA_SEMANA, ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab']);
+  });
+});
+
+describe('horariosDoDia com horários da quadra dia por dia (quadra.horariosPorDia)', () => {
+  const SEMANA = ['09:00', '10:30', '12:00'];
+  const FDS = ['09:00', '13:30'];
+  const base = { padraoClubeSemana: SEMANA, padraoClubeFds: FDS };
+
+  it('lista da quadra no dia vence a lista antiga da quadra, a do dia do clube e o padrão', () => {
+    const quadra = { id: 'q1', horariosPorDia: { qui: ['19:00', '07:00'] }, horariosSemana: ['08:00'] };
+    const qui = horariosDoDia({ ...base, configHorariosPorDia: { qui: ['10:00'] }, quadra, diaSemana: 4 });
+    assert.deepEqual(qui, { horarios: ['07:00', '19:00'], proprio: true, origem: 'quadra-dia' });
+    // terça: sem lista do dia na quadra -> a lista antiga da quadra continua valendo
+    const ter = horariosDoDia({ ...base, configHorariosPorDia: { ter: ['10:00'] }, quadra, diaSemana: 2 });
+    assert.deepEqual(ter, { horarios: ['08:00'], proprio: true, origem: 'quadra' });
+  });
+
+  it('sem lista antiga, dia sem lista na quadra cai na lista do dia do clube e depois no padrão', () => {
+    const quadra = { id: 'q1', horariosPorDia: { qui: ['19:00'] } };
+    assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia: { ter: ['10:00'] }, quadra, diaSemana: 2 }),
+      { horarios: ['10:00'], proprio: false, origem: 'dia' });
+    assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia: { ter: ['10:00'] }, quadra, diaSemana: 3 }),
+      { horarios: SEMANA, proprio: false, origem: 'padrao' });
+  });
+
+  it('quadra só com listas antigas continua igual a antes', () => {
+    const quadra = { id: 'q2', horariosSemana: ['08:00', '19:00'], horariosFimDeSemana: ['13:30'] };
+    for (const diaSemana of [1, 2, 3, 4, 5]) {
+      assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia: { ter: ['10:00'] }, quadra, diaSemana }),
+        { horarios: ['08:00', '19:00'], proprio: true, origem: 'quadra' });
+    }
+    for (const diaSemana of [0, 6]) {
+      assert.deepEqual(horariosDoDia({ ...base, quadra, diaSemana }), { horarios: ['13:30'], proprio: true, origem: 'quadra' });
+    }
+  });
+
+  it('sábado e domingo da quadra funcionam separados', () => {
+    const quadra = { id: 'q1', horariosPorDia: { sab: ['14:00'], dom: ['08:00', '09:30'] }, horariosFimDeSemana: ['13:30'] };
+    assert.deepEqual(horariosDoDia({ ...base, quadra, diaSemana: 6 }), { horarios: ['14:00'], proprio: true, origem: 'quadra-dia' });
+    assert.deepEqual(horariosDoDia({ ...base, quadra, diaSemana: 0 }), { horarios: ['08:00', '09:30'], proprio: true, origem: 'quadra-dia' });
+  });
+
+  it('horariosPorDia da quadra vazio ou quebrado é ignorado', () => {
+    for (const horariosPorDia of [null, {}, { qui: [] }, { qui: null }, { qui: 'lixo' }, ['x'], 'quebrado', { 4: ['07:00'] }, { qui: [undefined, 'x'] }]) {
+      const quadra = { id: 'q1', horariosPorDia };
+      assert.deepEqual(horariosDoDia({ ...base, configHorariosPorDia: { qui: ['10:00'] }, quadra, diaSemana: 4 }),
+        { horarios: ['10:00'], proprio: false, origem: 'dia' });
+    }
+    const objFirebase = { id: 'q1', horariosPorDia: { qui: { 0: '11:30', 1: '10:00', 2: null } } };
+    assert.deepEqual(horariosDoDia({ ...base, quadra: objFirebase, diaSemana: 4 }).horarios, ['10:00', '11:30']);
+  });
+});
+
+describe('horariosProprioDaQuadraNoDia (o que a tela "dia por dia" mostra preenchido)', () => {
+  it('lista do dia, senão a antiga de semana (seg a sex) ou de fim de semana (sáb e dom), senão []', () => {
+    const quadra = { horariosPorDia: { qui: ['19:00'] }, horariosSemana: ['08:00'], horariosFimDeSemana: ['13:30'] };
+    assert.deepEqual(horariosProprioDaQuadraNoDia(quadra, 4), ['19:00']);
+    for (const dia of [1, 2, 3, 5]) assert.deepEqual(horariosProprioDaQuadraNoDia(quadra, dia), ['08:00']);
+    for (const dia of [0, 6]) assert.deepEqual(horariosProprioDaQuadraNoDia(quadra, dia), ['13:30']);
+    for (const dia of [0, 1, 2, 3, 4, 5, 6]) assert.deepEqual(horariosProprioDaQuadraNoDia({ id: 'q' }, dia), []);
+    assert.deepEqual(horariosProprioDaQuadraNoDia(null, 2), []);
+  });
+});
+
+describe('quadraComHorariosPorDia (salvar horários da quadra dia por dia)', () => {
+  it('quadra antiga: campos pré-preenchidos salvos sem mudança mantêm exatamente os mesmos horários', () => {
+    const SEMANA = ['09:00'], FDS = ['10:00'];
+    const antiga = { id: 'q1', nome: 'Quadra 01', horariosSemana: ['08:00', '19:00'], horariosFimDeSemana: ['13:30'] };
+    // o que a tela mostra em cada um dos 7 campos
+    const campos = {};
+    CHAVES_DIA_SEMANA.forEach((chave, dia) => {
+      const l = horariosProprioDaQuadraNoDia(antiga, dia);
+      if (l.length) campos[chave] = l;
+    });
+    const nova = quadraComHorariosPorDia(antiga, campos);
+    assert.deepEqual(nova, {
+      id: 'q1', nome: 'Quadra 01',
+      horariosPorDia: { dom: ['13:30'], seg: ['08:00', '19:00'], ter: ['08:00', '19:00'], qua: ['08:00', '19:00'], qui: ['08:00', '19:00'], sex: ['08:00', '19:00'], sab: ['13:30'] },
+    });
+    for (let dia = 0; dia < 7; dia++) {
+      const antes = horariosDoDia({ quadra: antiga, diaSemana: dia, padraoClubeSemana: SEMANA, padraoClubeFds: FDS });
+      const depois = horariosDoDia({ quadra: nova, diaSemana: dia, padraoClubeSemana: SEMANA, padraoClubeFds: FDS });
+      assert.deepEqual(depois.horarios, antes.horarios);
+    }
+  });
+
+  it('só quinta preenchida: grava só quinta, apaga as listas antigas e não mexe no original', () => {
+    const antiga = { id: 'q1', nome: 'Quadra 01', horariosSemana: ['08:00'] };
+    const nova = quadraComHorariosPorDia(antiga, { qui: ['18:00', '07:00'] });
+    assert.deepEqual(nova, { id: 'q1', nome: 'Quadra 01', horariosPorDia: { qui: ['07:00', '18:00'] } });
+    assert.deepEqual(antiga, { id: 'q1', nome: 'Quadra 01', horariosSemana: ['08:00'] });
+  });
+
+  it('tudo em branco: some o horariosPorDia (quadra volta a seguir o clube)', () => {
+    const nova = quadraComHorariosPorDia({ id: 'q1', nome: 'Q', horariosPorDia: { qui: ['07:00'] }, horariosFimDeSemana: ['13:30'] }, {});
+    assert.deepEqual(nova, { id: 'q1', nome: 'Q' });
+  });
+
+  it('na lista de quadras, só a quadra salva muda', () => {
+    const quadras = [{ id: 'q1', nome: 'A', horariosSemana: ['08:00'] }, { id: 'q2', nome: 'B', horariosSemana: ['09:00'] }];
+    const nova = quadras.map((q) => q.id === 'q1' ? quadraComHorariosPorDia(q, { qui: ['07:00'] }) : q);
+    assert.equal(nova[1], quadras[1]);
+    assert.deepEqual(nova[0], { id: 'q1', nome: 'A', horariosPorDia: { qui: ['07:00'] } });
   });
 });
 
