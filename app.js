@@ -471,7 +471,7 @@ function render() {
   root.innerHTML = `
     ${renderAppSidebar()}
     <div class="app-content-with-sidebar">
-    <header class="hp-header">
+    <header class="hp-header${isAdmin ? ' hp-header-compacto' : ''}">
       <div class="hp-header-inner">
         <div class="hp-brand">
           ${renderBotaoAppSidebar()}
@@ -796,7 +796,7 @@ function renderLobby() {
   root.innerHTML = `
     ${renderAppSidebar()}
     <div class="app-content-with-sidebar">
-    <header class="hp-header">
+    <header class="hp-header${isAdmin ? ' hp-header-compacto' : ''}">
       <div class="hp-header-inner">
         <div class="hp-brand">
           ${renderBotaoAppSidebar()}
@@ -3395,7 +3395,7 @@ function renderReservas() {
   root.innerHTML = `
     ${renderAppSidebar()}
     <div class="app-content-with-sidebar">
-    <header class="hp-header">
+    <header class="hp-header${isAdmin ? ' hp-header-compacto' : ''}">
       <div class="hp-header-inner">
         <div class="hp-brand">
           ${renderBotaoAppSidebar()}
